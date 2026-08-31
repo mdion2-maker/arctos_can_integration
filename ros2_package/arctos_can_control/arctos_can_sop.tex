@@ -644,6 +644,33 @@ This session's safe envelope was built from a hand-estimated $\pm 30^\circ$, whi
 Returning Joint B to its confirmed "straight up" reference position ($-175.14^\circ$) after the tests above, a guarded single relative move undershot its 8-second monitoring window and the script disabled the motor (\texttt{0xF3 0x00}) and exited while still $14^\circ$ short. Re-running the same script moments later found the joint had continued on toward the target well past where monitoring stopped -- the move kept executing on the driver's own internal control loop after the disable command was sent, not just after the script exited. \textbf{Disabling coils does not appear to be an immediate stop for a move already underway; \texttt{EMERGENCY\_STOP (0xF7)} is the actual immediate-halt command.} This session it resolved safely only because the residual motion happened to continue in the correct direction and stayed inside the confirmed-safe envelope the whole time. Any future guarded test that might need to actually interrupt an in-flight \texttt{POSITION\_CONTROL} move should send \texttt{0xF7}, not rely on disabling coils.
 \end{caution}
 
+\begin{caution}{Correction: everything labeled ``Joint B'' in this session (Sections~\ref{sec:session-joint-b-recalibration}--\ref{sec:session-joint-b-real-load}) was actually Y\_joint, not B\_joint}
+After this session's testing was done, the user realized the naming had drifted: the physical unit being called ``Joint B'' throughout the recalibration incident, the absolute-position encoding bug, and the real-load verification was actually \texttt{Y\_joint} (\texttt{motor\_id: 2, gear\_ratio: 150.0, hardware\_type: MKS\_57D}) -- confirmed by the fact that the CAN ID found during that session, \texttt{0x02}, is exactly Y\_joint's real \texttt{motor\_id}, not B\_joint's (\texttt{5}). Separately, ``Joint A'' throughout this document is confirmed correct as \texttt{X\_joint} (already used with the right \texttt{gear\_ratio: 13.5} throughout).
+
+The real B\_joint (\texttt{motor\_id: 5, gear\_ratio: 67.82, MKS\_42D}) is the joint referred to earlier in this document under the original Joint B gear-backlash investigation (Sections~\ref{sec:session-2026-08-27}--\ref{sec:bare-motor-exoneration}), from before ``Joint A'' existed in this project's vocabulary -- that work is unaffected by this correction.
+
+\textbf{Practical impact of this session's mislabeling:} every script run against the mislabeled joint used \texttt{--gear-ratio 67.82} (B\_joint's value) instead of the correct \texttt{150.0} (Y\_joint's value). Since \texttt{joint\_deg = raw \texttt{*} 360 / 16384 / gear\_ratio}, using the smaller gear ratio made every reported ``joint degree'' figure read about $150/67.82 \approx 2.21\times$ \emph{larger} than the true physical rotation -- the real motion was smaller than reported, not larger. The hand-measured $\pm 30^\circ$ safe envelope (Section~\ref{sec:session-joint-b-real-load}) was likewise computed in the wrong-scaled unit, which made the enforced raw-count safety bound \emph{tighter} than the true physical limit, not looser. No part of this correction indicates an actual safety violation; it indicates the reported degree figures for that joint in this session should not be trusted at face value, and any future work on this specific unit should use \texttt{gear\_ratio: 150.0} and Y\_joint's real calibrated \texttt{home\_position}/\texttt{opposite\_limit} (\texttt{-0.854}/\texttt{2.006} rad) going forward.
+\end{caution}
+
+\section{Session Log: Joint Z Bring-Up (Bare Motor)}
+\label{sec:session-joint-z}
+
+\subsection{Settings and calibration}
+Panel configured to \texttt{SR\_CLOSE}, 1600\,mA (matching the working baseline established for the other MKS\_42D-family joints), and calibrated -- this time letting the routine run all the way to completion and settle on its own, per the lesson learned from Y\_joint's interrupted-calibration incident (Section~\ref{sec:session-joint-b-recalibration}). CAN ID verified by scan (not assumed from the panel) as \texttt{0x03}, matching \texttt{Z\_joint}'s real \texttt{motor\_id} in \texttt{arctos\_controller.yaml} exactly -- no naming mismatch this time.
+
+\begin{caution}{Initial reliability/first-motion results were reported at the wrong scale, then corrected}
+Before confirming the motor was bare (decoupled from its external gearbox), the reliability and first-motion tests were run with \texttt{--gear-ratio 150.0} out of habit. Once confirmed bare, this was corrected to \texttt{--gear-ratio 1.0} for the remaining tests, matching this project's standing convention for every other bare-motor test. The first-motion result was re-derived: the commanded 300 raw-count move was actually $\approx 6.50^\circ$ of real motor-shaft rotation (observed $\approx$ -296 counts $\approx -6.50^\circ$), not the $\pm 0.04^\circ$ originally reported at the wrong scale. As with the Y\_joint mislabeling above, the raw CAN commands and actual physical motion were correct throughout -- only the degree-unit reporting was off, caught before any statistical testing was run at the wrong scale.
+\end{caution}
+
+\subsection{Results: clean on the bare motor}
+\begin{itemize}
+    \item \textbf{Link quality}: 200/200 responses (100\%), 0 CRC failures, 0 encoder jitter, mean latency 3.4\,ms.
+    \item \textbf{First motion} (corrected scale): $\approx 6.50^\circ$ commanded and observed, matching closely.
+    \item \textbf{Alternating} (30 reps, $3^\circ$ steps, \texttt{--gear-ratio 1.0}, \texttt{--inverted}): \textbf{30/30 (100\%)}, both halves 100\%, consistent $\sim$97\% magnitude accuracy, \texttt{FD 02} present on every rep (matching Joint A/X's normal behavior, unlike Y\_joint's post-recalibration change).
+    \item \textbf{Sustained} (10 reps, $20^\circ$ steps): \textbf{10/10 (100\%)}, both halves 100\%, 98--102\% accuracy, $200.4^\circ$ traveled with no degradation.
+\end{itemize}
+Joint Z is clean on the bare motor, matching the pattern for every other joint verified so far in this project. Not yet tested at real load (still decoupled from its external gearbox/drivetrain at time of writing).
+
 \section{The Python Code Stack}
 To build an automated system, we separate our project into a clean library file (\texttt{mks\_driver.py}) that handles the mathematical scaling transformations, and an execution test wrapper (\texttt{run\_arm.py}).
 
