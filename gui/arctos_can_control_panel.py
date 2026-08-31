@@ -2,19 +2,25 @@
 """
 arctos_can_control_panel.py
 
-Small desktop app with two buttons for the CANable bring-up/shutdown
+Small desktop app with three buttons for the CANable bring-up/shutdown
 routine documented in arctos_can_sop.tex:
 
-  "Set Up CAN"                    -- binds the CANable adapter to can0 at
-                                      500 kbit/s (slcand -s6, matching the
-                                      corrected scripts/setup_canable.sh),
-                                      after it has been plugged into the
-                                      VirtualBox VM's USB.
-  "Disable Motor && Safe to Unplug" -- scans the bus for any responding
-                                      joint, sends it an explicit disable
-                                      (0xF3 0x00), then brings can0 down and
-                                      stops slcand so the adapter can be
-                                      safely unplugged.
+  "Set Up CAN"      -- binds the CANable adapter to can0 at 500 kbit/s
+                        (slcand -s6, matching the corrected
+                        scripts/setup_canable.sh), after it has been plugged
+                        into the VirtualBox VM's USB.
+  "Disable Motor"   -- scans the bus for any responding joint and sends it
+                        an explicit disable (0xF3 0x00). Does not touch the
+                        CAN interface itself.
+  "Shut Down CAN"   -- brings can0 down and stops slcand, so the adapter can
+                        be safely unplugged. Does not touch the motor --
+                        run "Disable Motor" first if a joint might still be
+                        enabled.
+
+These are deliberately separate (not combined into one "make everything
+safe" action) so each can be used independently -- e.g. disabling a motor
+mid-session without tearing down the CAN link, or bringing the link down
+when nothing was ever enabled.
 
 Bringing the interface up/down needs root; this app requests that via
 pkexec (a graphical password prompt) rather than embedding sudo, so it
@@ -153,21 +159,28 @@ def scan_and_disable(log):
         bus.shutdown()
 
 
-def disable_and_make_safe(log):
-    log("=== Disable Motor && Safe to Unplug ===")
+def disable_motor(log):
+    log("=== Disable Motor ===")
     if not can0_is_up():
-        log(f"{IFACE} is not up -- nothing to disable. Already safe to unplug.")
+        log(f"{IFACE} is not up -- nothing to scan/disable.")
         return True
 
     try:
         disabled = scan_and_disable(log)
     except Exception as e:
         log(f"ERROR while scanning/disabling over CAN: {e}")
-        log("Proceeding to bring the interface down anyway.")
-        disabled = None
+        return False
 
     if disabled:
         log(f"Disabled {len(disabled)} joint(s): {[hex(i) for i in disabled]}")
+    return True
+
+
+def shutdown_can(log):
+    log("=== Shut Down CAN ===")
+    if not can0_is_up():
+        log(f"{IFACE} is already down. Safe to unplug the CANable adapter.")
+        return True
 
     cmd = f"ip link set {IFACE} down; pkill slcand 2>/dev/null"
     run_pkexec(cmd, log)
@@ -184,7 +197,7 @@ class App:
     def __init__(self, root):
         self.root = root
         root.title("Arctos CAN Control Panel")
-        root.geometry("640x420")
+        root.geometry("760x420")
 
         header = tk.Label(root, text="Arctos CAN Control Panel", font=("sans-serif", 14, "bold"))
         header.pack(pady=(12, 4))
@@ -196,15 +209,20 @@ class App:
         button_frame = tk.Frame(root)
         button_frame.pack(pady=6)
 
-        self.setup_btn = tk.Button(button_frame, text="Set Up CAN", width=24, height=2,
+        self.setup_btn = tk.Button(button_frame, text="Set Up CAN", width=18, height=2,
                                     bg="#2e7d32", fg="white", font=("sans-serif", 11, "bold"),
                                     command=self.on_setup)
         self.setup_btn.grid(row=0, column=0, padx=8)
 
-        self.disable_btn = tk.Button(button_frame, text="Disable Motor &&\nSafe to Unplug",
-                                      width=24, height=2, bg="#c62828", fg="white",
+        self.disable_btn = tk.Button(button_frame, text="Disable Motor",
+                                      width=18, height=2, bg="#ef6c00", fg="white",
                                       font=("sans-serif", 11, "bold"), command=self.on_disable)
         self.disable_btn.grid(row=0, column=1, padx=8)
+
+        self.shutdown_btn = tk.Button(button_frame, text="Shut Down CAN",
+                                       width=18, height=2, bg="#c62828", fg="white",
+                                       font=("sans-serif", 11, "bold"), command=self.on_shutdown)
+        self.shutdown_btn.grid(row=0, column=2, padx=8)
 
         self.status_var = tk.StringVar(value="Ready.")
         status_label = tk.Label(root, textvariable=self.status_var, fg="#333333")
@@ -230,6 +248,7 @@ class App:
         state = "normal" if enabled else "disabled"
         self.setup_btn.configure(state=state)
         self.disable_btn.configure(state=state)
+        self.shutdown_btn.configure(state=state)
 
     def set_status(self, text):
         self.root.after(0, lambda: self.status_var.set(text))
@@ -253,7 +272,10 @@ class App:
         self.run_in_background(setup_can, "Setting up CAN (a password prompt may appear)...")
 
     def on_disable(self):
-        self.run_in_background(disable_and_make_safe, "Disabling motor and shutting down CAN...")
+        self.run_in_background(disable_motor, "Disabling motor...")
+
+    def on_shutdown(self):
+        self.run_in_background(shutdown_can, "Shutting down CAN (a password prompt may appear)...")
 
 
 def main():
