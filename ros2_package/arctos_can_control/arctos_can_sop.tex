@@ -466,6 +466,34 @@ This is the cleanest, most controlled test in the entire investigation, and it c
     \item If the sustained-mode test still shows any stick-slip after reassembly with the new gears, that would point at a bearing or shaft-alignment issue distinct from tooth-mesh clearance, since the mesh-tightness hypothesis would have been directly addressed by the reprint.
 \end{itemize}
 
+\section{Session Log: Joint C -- \texttt{SR\_CLOSE} Applied, Then the Same Motor-Exoneration Pattern as Joint B}
+\label{sec:session-joint-c-followup}
+
+\subsection{\texttt{SR\_CLOSE} + 1600\,mA + confirmed CANRSP: still no torque connected}
+Applying Joint B's verified-working panel configuration to Joint C (Section~\ref{sec:session-2026-08-27}) -- \texttt{SR\_CLOSE}, 1600\,mA, CANRSP enabled -- did \textbf{not} produce holding torque while connected to the gearbox; the shaft still span freely. Joint C has now been tried in every documented working mode (\texttt{SR\_vFOC}, \texttt{CR\_vFOC}/\texttt{CR\_FOC}, \texttt{CR\_CLOSE}, \texttt{SR\_CLOSE}) across 1200--3000\,mA, with zero holding torque in any combination while connected -- ruling out a simple settings mismatch as the sole explanation.
+
+\subsection{A confirmed real move -- then inconsistent torque}
+Watching the panel for a fault message (the technique that found Joint B's shaft-protection trip) revealed no error, but did surface something new: after unplugging and replugging the motor connector, a commanded $0.5^\circ$ move executed almost perfectly ($0.4963^\circ$ actual, confirmed independently by both the CAN-side encoder and the driver's own panel display, which reports motor-shaft-scale degrees rather than joint-scale). \textbf{This is Joint C's first confirmed real movement across the entire investigation.} Immediately afterward, though, holding-torque checks were inconsistent -- spinning freely both right after the move and during two subsequent 10s/20s enable-and-hold tests (the second including deliberately wiggling the connector, which changed nothing) -- while the connector was still attached to the gearbox.
+
+\subsection{Bare-motor test: fully exonerated, exactly like Joint B}
+With the motor mechanically disconnected from the gearbox (mirroring Section~\ref{sec:bare-motor-exoneration}'s test on Joint B), using \texttt{joint\_statistical\_reliability\_test.py} with \texttt{--gear-ratio 1.0}:
+\begin{itemize}
+    \item \textbf{Alternating}: 20 reps of $\pm180^\circ$ -- \textbf{20/20 (100\%)}, all within $0.15^\circ$ of commanded.
+    \item \textbf{Sustained}: 10 reps of $360^\circ$ (3600$^\circ$ total, 10 full revolutions) -- \textbf{10/10 (100\%)}, essentially exact.
+    \item \textbf{Static holding torque, isolated}: enabled and held for 10s with no move command -- \textbf{the shaft resisted turning by hand}, confirmed real holding torque, with the motor noticeably warm afterward (consistent with genuine current draw).
+\end{itemize}
+
+\begin{caution}{Joint C's motor and driver are healthy -- every failure observed was downstream of the connector, in the gearbox}
+This flips the earlier "loose connector" theory: a genuinely flaky connector should have caused failures during this 30-command bare-motor test too, and it did not -- perfect reliability throughout, for both motion and static holding torque. The far more consistent explanation across every observation this session: \textbf{the motor and driver are completely fine}, and the one successful move plus the otherwise-consistent "spins freely" results were the gearbox itself intermittently binding -- occasionally overcome by an active move command, but resisting during passive holding. This is the same root-cause category as Joint B (Section~\ref{sec:bare-motor-exoneration}), on the same 67.82:1 gearbox family.
+\end{caution}
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Let the motor cool (it was warm after the holding-torque confirmation) before further enable tests.
+    \item Reconnect Joint C's gearbox and repeat the alternating-vs-sustained comparison used to diagnose Joint B -- if the same stick-slip pattern appears, treat it with the same hands-on approach (localize by feel, work the gears, or reprint with the same corrective settings from Section~\ref{sec:session-2026-08-31}).
+    \item Given both Joint B and Joint C -- built from the same driver/gearbox family -- have now independently converged on "motor and driver clean, gearbox at fault," consider whether this points at a systematic issue in how this gearbox family is manufactured/printed rather than two unrelated one-off defects.
+\end{itemize}
+
 \section{The Python Code Stack}
 To build an automated system, we separate our project into a clean library file (\texttt{mks\_driver.py}) that handles the mathematical scaling transformations, and an execution test wrapper (\texttt{run\_arm.py}).
 
