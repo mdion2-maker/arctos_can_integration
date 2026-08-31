@@ -25,6 +25,24 @@ correctly when it was left off. Use joint_position_control_test.py's
 --enable-shaft-protection flag separately if you want to investigate that
 feature on its own.
 
+CAUTION (2026-08-31) -- this script used to read the encoder exactly once,
+after a *fixed* --status-timeout-s (default 4.0s) regardless of whether the
+move had actually finished. On Joint Z at gear_ratio 150 (a much larger
+reduction than Joint B's 67.82 this script was tuned against), a 3-5 degree
+move at speed 15 genuinely takes 5-8+ seconds to complete -- so every
+rep was being measured mid-motion. Each rep's shortfall then silently
+finished during the inter-rep pause, uncounted, and got folded into the
+*next* rep's delta -- producing a completely fabricated "first move
+undershoots to ~50-80%, then every following move recovers to ~100%"
+pattern that was originally (wrongly) documented as mechanical stiction.
+Confirmed by watching a single isolated move for 20s: it reached the
+commanded distance almost exactly and simply took longer than the old
+fixed timeout to get there. Fixed by polling until the position genuinely
+stops changing (a real settle-detection loop) instead of reading once on a
+fixed clock. If you see an "undershoot then recover" pattern from this
+script's *old* behavior on any other joint, do not trust it as a real
+finding without re-checking with the current, settle-based version.
+
 Usage:
     # Alternating (tests whether the link/settings are reliable in general)
     python3 joint_statistical_reliability_test.py --can-id 0x05 --gear-ratio 67.82 \\
@@ -90,16 +108,38 @@ def move_position_control(bus, motor_id, pulses, speed, accel, direction):
     return send_frame(bus, motor_id, data)
 
 
-def watch_fd_status_frames(bus, motor_id, timeout):
-    seen = []
-    end = time.time() + timeout
-    while time.time() < end:
-        resp = bus.recv(timeout=max(0.0, end - time.time()))
-        if resp is None:
+def wait_for_settle(bus, motor_id, gear_ratio, max_wait, stable_reads=3, epsilon_deg=0.01):
+    """Poll the encoder until position stops changing (a real settle
+    detection), instead of reading once after a fixed timeout regardless of
+    whether the move has actually finished -- see the CAUTION in this
+    file's module docstring for why that produced a fabricated 'stiction'
+    pattern on Joint Z. Also collects any FD status frames seen meanwhile,
+    though they should not be trusted as a completion signal on their own.
+    Returns (final_deg, statuses, timed_out)."""
+    statuses = []
+    start = time.time()
+    prev_deg = None
+    stable_count = 0
+    while time.time() - start < max_wait:
+        while True:
+            resp = bus.recv(timeout=0.0)
+            if resp is None:
+                break
+            if resp.arbitration_id == motor_id and len(resp.data) == 3 and resp.data[0] == POSITION_CONTROL:
+                statuses.append(resp.data[1])
+        raw = read_encoder(bus, motor_id)
+        if raw is None:
             continue
-        if resp.arbitration_id == motor_id and len(resp.data) == 3 and resp.data[0] == POSITION_CONTROL:
-            seen.append(resp.data[1])
-    return seen
+        deg = joint_deg(raw, gear_ratio)
+        if prev_deg is not None and abs(deg - prev_deg) < epsilon_deg:
+            stable_count += 1
+            if stable_count >= stable_reads:
+                return deg, statuses, False
+        else:
+            stable_count = 0
+        prev_deg = deg
+        time.sleep(0.2)
+    return prev_deg, statuses, True
 
 
 def main():
@@ -119,7 +159,10 @@ def main():
     parser.add_argument("--speed", type=int, default=15)
     parser.add_argument("--accel", type=int, default=1)
     parser.add_argument("--inter-rep-pause-s", type=float, default=2.0)
-    parser.add_argument("--status-timeout-s", type=float, default=4.0)
+    parser.add_argument("--status-timeout-s", type=float, default=15.0,
+                         help="Max time to wait for the position to settle after a move, not a "
+                              "fixed read delay -- the script polls and returns as soon as the "
+                              "position stops changing, or warns if this bound is hit first.")
     parser.add_argument("--inverted", action="store_true",
                          help="Set when this joint's config has inverted: true. The encoder then "
                              "moves opposite to the commanded direction sign; without this flag "
@@ -167,18 +210,17 @@ def main():
                 pass
 
             move_position_control(bus, args.can_id, step_pulses, args.speed, args.accel, direction_byte)
-            statuses = watch_fd_status_frames(bus, args.can_id, args.status_timeout_s)
-
-            raw_now = read_encoder(bus, args.can_id)
-            deg_now = joint_deg(raw_now, args.gear_ratio) if raw_now is not None else None
+            deg_now, statuses, timed_out = wait_for_settle(
+                bus, args.can_id, args.gear_ratio, args.status_timeout_s)
             moved = (deg_now - prev_deg) if deg_now is not None else None
 
             success = 2 in statuses
             pct = (100.0 * moved / expected) if (moved is not None and expected != 0) else None
             pct_str = f"{pct:.0f}%" if pct is not None else "N/A"
+            settle_warn = "  ** DID NOT SETTLE within status-timeout-s **" if timed_out else ""
             print(f"[Rep {i:2d}] dir={'+' if direction_sign > 0 else '-'}  statuses={statuses}  "
                   f"moved={moved:+.4f} deg  expected={expected:+.4f}  "
-                  f"pct={pct_str}  {'OK' if success else 'NO-FD02'}")
+                  f"pct={pct_str}  {'OK' if success else 'NO-FD02'}{settle_warn}")
 
             results.append({"rep": i, "statuses": statuses, "moved": moved,
                              "expected": expected, "success": success})

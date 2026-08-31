@@ -671,6 +671,44 @@ Before confirming the motor was bare (decoupled from its external gearbox), the 
 \end{itemize}
 Joint Z is clean on the bare motor, matching the pattern for every other joint verified so far in this project. Not yet tested at real load (still decoupled from its external gearbox/drivetrain at time of writing).
 
+\section{Session Log: Joint Z Real-Load Testing -- A Chain of Apparent Mechanical Problems, All Traced to One Test-Script Bug}
+\label{sec:session-joint-z-real-load}
+
+\subsection{Safety envelope: a correction mid-session, then a real hard-stop scare avoided}
+With the belt attached, the user initially reported $\pm 20^\circ$ of room by hand, then corrected this to $\pm 10^\circ$ before any test that mattered was run at the wider figure. The correction mattered: the first alternating test at very slow speed (5) drifted a net $-10^\circ$ over 10 reps and initially looked like it might explain a suspected gear-backlash problem -- but re-examining it against the corrected $\pm 10^\circ$ figure, the final position landed almost exactly on the true boundary, raising the possibility the joint had simply driven into a real hard stop rather than exhibited a mechanical fault. The user confirmed nothing was jammed and manually recentered the joint, reporting the same $\pm 10^\circ$ figure from the new middle.
+
+\subsection{The reversal problem was real, not a hard-stop artifact}
+Retesting at the same slow speed from a freshly-centered, properly-verified-safe position reproduced the identical failure pattern almost exactly (\texttt{dir=+} moving $\approx -0.81^\circ$ against a $-2.0^\circ$ command; \texttt{dir=-} moving $\approx -1.19^\circ$ against a $+2.0^\circ$ command -- wrong sign, not just wrong magnitude), aborting safely via the safe-band check partway through. Since this was nowhere near a hard stop this time, the hard-stop explanation was ruled out: this is a real, repeatable behavior specific to alternating direction under load at very slow speed.
+
+\subsection{A clarifying single-direction test, then full resolution at normal speed}
+A single sustained-direction corrective move (recentering the joint, still at speed 5) progressed smoothly and accurately toward its target with no sign of the reversal problem -- confirming the issue is specific to \emph{alternating} direction, not slow speed in general. Retesting the alternating comparison at normal speed (15) from the same properly-centered, verified-safe position came back completely clean: \textbf{10/10 (100\%)}, every rep within 0.3\% of commanded magnitude, net drift $+0.0001^\circ$.
+
+\begin{caution}{Working theory at the time: backlash needing momentum to close on reversal -- see full retraction below}
+This was the working explanation reached in-session for the slow-speed alternating result above. It turned out to be the wrong explanation for a related-looking but distinct set of symptoms found next (the sustained-test "stiction" pattern), which was fully retracted after finding a real script bug. Whether \emph{this specific} slow-speed alternating finding is itself an artifact of the same bug, rather than a real backlash/momentum effect, is addressed at the end of this section -- read to the end before trusting either conclusion.
+\end{caution}
+
+\subsection{A ``stiction'' pattern that was actually a test-script bug -- full retraction}
+The sustained tests that followed (documented in earlier drafts of this section) appeared to show real partial-completion behavior at $3^\circ$ and $5^\circ$ steps -- undershooting on a move's first attempt, sometimes recovering on a second attempt, sometimes not -- and were provisionally attributed to mechanical stiction (static friction higher than kinetic, needing a "warm-up" move to fully engage). \textbf{This conclusion was wrong, and has been fully retracted.}
+
+The actual cause: \texttt{joint\_statistical\_reliability\_test.py} read the encoder exactly once, a fixed \texttt{--status-timeout-s} (default 4.0\,s) after sending each move, regardless of whether the move had actually finished. On Joint Z's gear ratio (150, much larger than Joint B's 67.82 this script was originally tuned against), moves of a few degrees at normal speed genuinely take 5--8+ seconds to complete. Every rep was therefore measured mid-motion. The shortfall then finished silently during the 2-second inter-rep pause, uncounted, and got folded into the \emph{next} rep's reported delta -- fabricating a completely artificial "first move undershoots, later moves recover" pattern that had nothing to do with the joint's real mechanical behavior.
+
+This was confirmed conclusively by watching two isolated single moves (a $5^\circ$ and a $3^\circ$) continuously for up to 20 seconds with no fixed cutoff: both reached their commanded distance almost exactly ($-5.0010^\circ$ and $+3.0022^\circ$ respectively) and held rock-steady afterward -- they were never stuck or resisting, they simply took longer than the old test script waited.
+
+\textbf{Fix applied:} \texttt{joint\_statistical\_reliability\_test.py} now polls the encoder until the position genuinely stops changing (three consecutive stable readings) instead of reading once on a fixed clock, with \texttt{--status-timeout-s} repurposed as a generous upper bound (default raised to 15\,s) rather than a fixed wait. Re-running both step sizes with the fixed script came back completely clean: $3^\circ$ sustained, 5 reps, \textbf{100\% accuracy on every single rep including the first} ($-3.0045^\circ$ to $-2.9962^\circ$), with \texttt{FD 02} present on every rep this time; $5^\circ$ sustained, 6 reps, \textbf{100\% accuracy on every rep} ($+4.9970^\circ$ to $+5.0029^\circ$), \texttt{FD 02} present throughout. There is no stiction, no step-size dependency, and no completion problem at normal speed on this joint -- the joint has been behaving correctly the entire time.
+
+\begin{caution}{Re-verified: the slow-speed "reversal problem" was the same bug too -- fully retracted}
+Re-run with the fixed script (10 reps, $2^\circ$, alternating, speed 5): \textbf{10/10 (100\%) magnitude accuracy in both directions}, \texttt{FD 02} present on 9 of 10 reps. No wrong-sign moves, no partial completion, no reversal problem of any kind. The entire ``low-speed reversal failure'' finding earlier in this section was the identical fixed-timeout measurement bug, not a real behavior -- there is nothing wrong with Joint Z at slow speed either.
+\end{caution}
+
+\subsection{Conclusion: Joint Z has no mechanical issues at any speed or step size tested}
+Every real-load finding in this section that suggested a mechanical problem -- the low-speed reversal failure, the step-size-dependent under-completion, the ``stiction'' recovery pattern -- was the same single root cause: the test script measuring position before slower moves had actually finished. With that fixed, Joint Z is clean across bare-motor and real-load testing, both directions, multiple step sizes, and both slow and normal speed. This is a good example of why an odd result should prompt checking the measurement method before concluding the hardware is at fault.
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Apply the same settle-detection scrutiny to any other joint's earlier results that used the old fixed-timeout version of this script, particularly any with a large \texttt{gear\_ratio} where moves take longer to complete (Y\_joint at 150) -- Joints A/X (13.5) and B/C (67.82) have smaller gear ratios and shorter move durations, making this less likely to have affected them, but it has not been explicitly re-checked.
+    \item Sync the fixed \texttt{joint\_statistical\_reliability\_test.py} to the public repo and note the fix in its own history, not just here.
+\end{itemize}
+
 \section{The Python Code Stack}
 To build an automated system, we separate our project into a clean library file (\texttt{mks\_driver.py}) that handles the mathematical scaling transformations, and an execution test wrapper (\texttt{run\_arm.py}).
 
