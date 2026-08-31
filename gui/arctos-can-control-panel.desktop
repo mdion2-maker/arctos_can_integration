@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Arctos CAN Control Panel
+Comment=Set up or safely shut down the CANable adapter for the Arctos arm
+Exec=/usr/bin/python3 /home/maggied/arctos_ws/gui/arctos_can_control_panel.py
+Icon=network-transmit-receive
+Terminal=false
+Categories=Utility;
+StartupNotify=true
