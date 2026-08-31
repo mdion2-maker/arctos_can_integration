@@ -430,6 +430,42 @@ Given the above, the user is decoupling the mechanism and reprinting the gears s
     \item If the stick-slip pattern persists even after the gear reprint, that would argue against the backlash hypothesis and toward the motor/driver itself (bearing, encoder mounting, or a firmware behavior specific to long single commands) -- keep the belt-off isolation result and the chunked-vs-single-command comparison as reference points for that follow-up.
 \end{itemize}
 
+\section{Session Log: Housing-Off Retest, Gear Reprint Plan, and a Definitive Motor Exoneration (2026-08-31)}
+\label{sec:session-2026-08-31}
+
+\subsection{Project now mirrored on GitHub}
+The custom tooling in this document (every script under \texttt{arctos\_can\_control}, the desktop control-panel app, CANable firmware images, and this SOP itself) is now published at \url{https://github.com/mdion2-maker/arctos_can_integration}. The upstream \texttt{ros2\_arctos} repository is deliberately not duplicated there, since it already exists as its own project.
+
+\subsection{Housing-off retest: the stick-slip pattern got worse, not better}
+With the gearbox's outer housing removed (belt state at time of test not confirmed), the same $15^\circ$ single-command test from Section~\ref{sec:session-2026-08-27-large-scale} was repeated with the user watching the exposed mechanism directly. The stall was \textbf{longer than any prior test} -- stuck at $25.7\%$ of the commanded distance for a full \textbf{72 seconds} before suddenly bursting free and completing the remaining $75\%$ in 4 seconds. The user again had to physically assist it to get moving -- \textbf{confirming a real, sustained mechanical resistance, not a brief transient}. Removing the housing did not reveal an externally visible culprit, suggesting the resistance is internal to the gearbox (a specific stage, a bearing, or the shaft coupling) rather than something the housing alone exposes.
+
+\subsection{Decision: reprint the gears in Tough PLA with corrective settings}
+Given brass was less immediately available than nylon for the user, and given the diagnosis pointed at print-tolerance/backlash rather than a fundamental material limit, the decision was to reprint in Tough PLA (specifically Bambu Lab's own PLA Tough, printed on a Bambu Lab H2D) rather than jumping to metal. Settings recommended, layered on top of Bambu Studio's own built-in PLA Tough filament preset (which should supply temps/cooling -- not overridden by generic figures):
+\begin{itemize}
+    \item \textbf{XY Contour Compensation: $-0.05$ to $-0.1$mm} (Process Settings $\to$ Advanced) -- shrinks the external tooth profile to loosen mesh tightness. This is the setting most directly targeted at the diagnosed problem; \textbf{XY Hole Compensation} (which affects internal cavities like the shaft bore, not the tooth profile) was left at 0 since the diagnosed resistance varies by rotational position -- consistent with tooth-mesh tightness, not a bore/shaft fit issue, which would be relatively constant regardless of angle.
+    \item Print orientation flat (gear axis vertical), not standing on edge -- reduces ovality, which would otherwise reproduce the same position-dependent binding pattern in the new part.
+    \item Layer height $0.12$--$0.16$mm, 4--6 walls (or 80--100\% infill given the small part size), slower outer-wall speed, moderate ($50$--$70\%$) part-cooling fan.
+\end{itemize}
+
+\subsection{Definitive result: the bare motor, fully decoupled, is completely clean}
+\label{sec:bare-motor-exoneration}
+With the motor mechanically disconnected from the gearbox entirely (no belt, no gear coupling, no load whatsoever), \texttt{joint\_statistical\_reliability\_test.py} was run twice using \texttt{--gear-ratio 1.0} (direct motor-shaft degrees, since no gearbox is attached to convert through):
+\begin{itemize}
+    \item \textbf{Alternating}: 20 reps of $\pm180^\circ$ -- \textbf{20/20 (100\%)}, every rep within $0.3^\circ$ of commanded.
+    \item \textbf{Sustained}: 10 reps of $360^\circ$ in the same direction (3600$^\circ$ total, 10 full motor revolutions) -- \textbf{10/10 (100\%)}, every single revolution within $0.15^\circ$ of exactly $360^\circ$, with no stall, no hesitation, and no stick-slip pattern at any point across the entire sequence.
+\end{itemize}
+
+\begin{caution}{The motor, encoder, driver, and CAN chain are exonerated -- the problem is confirmed 100\% mechanical, inside the gearbox}
+This is the cleanest, most controlled test in the entire investigation, and it came back perfect at a scale (10 full revolutions, sustained, in one direction) that reliably triggered the stick-slip pattern in every prior test with the gearbox attached. Every earlier hypothesis about the motor, its encoder mounting, the driver's current/mode settings, or CAN-level command timing can now be set aside. The resistance is definitively located in the gearbox mechanism itself -- fully consistent with, and now strongly supporting, the gear-reprint plan above as the correct fix rather than a guess.
+\end{caution}
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Complete the gear reprint with the settings above; inspect the new gears for visible ovality/warping before installing (a quick visual/caliper check across a few diameters) rather than only discovering it via another multi-hour CAN test cycle.
+    \item Reassemble, then re-run the full verification sequence from Section~\ref{sec:joint-b-resolution} onward: \texttt{can\_id\_scan.py} (do not assume the ID survived reassembly), \texttt{joint\_reliability\_test.py}, then \texttt{joint\_statistical\_reliability\_test.py} in both modes across as much of the range as practical, motor-only baseline (Section~\ref{sec:bare-motor-exoneration}) already established as the reference for "clean."
+    \item If the sustained-mode test still shows any stick-slip after reassembly with the new gears, that would point at a bearing or shaft-alignment issue distinct from tooth-mesh clearance, since the mesh-tightness hypothesis would have been directly addressed by the reprint.
+\end{itemize}
+
 \section{The Python Code Stack}
 To build an automated system, we separate our project into a clean library file (\texttt{mks\_driver.py}) that handles the mathematical scaling transformations, and an execution test wrapper (\texttt{run\_arm.py}).
 
