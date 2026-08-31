@@ -115,8 +115,8 @@ def main():
     parser.add_argument("--max-wait-s", type=float, default=180.0)
     args = parser.parse_args()
 
-    lo = args.opposite_limit_deg + args.safety_margin_deg
-    hi = args.home_position_deg - args.safety_margin_deg
+    lo = min(args.home_position_deg, args.opposite_limit_deg) + args.safety_margin_deg
+    hi = max(args.home_position_deg, args.opposite_limit_deg) - args.safety_margin_deg
 
     def within_safe_band(deg):
         return lo <= deg <= hi

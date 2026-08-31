@@ -120,10 +120,16 @@ def main():
     parser.add_argument("--accel", type=int, default=1)
     parser.add_argument("--inter-rep-pause-s", type=float, default=2.0)
     parser.add_argument("--status-timeout-s", type=float, default=4.0)
+    parser.add_argument("--inverted", action="store_true",
+                         help="Set when this joint's config has inverted: true. The encoder then "
+                             "moves opposite to the commanded direction sign; without this flag "
+                             "the safe-band projection and expected/pct comparison assume "
+                             "commanded sign == physical sign and can both mis-project the safety "
+                             "check and misreport pct as ~-100% on perfectly good moves.")
     args = parser.parse_args()
 
-    lo = args.opposite_limit_deg + args.safety_margin_deg
-    hi = args.home_position_deg - args.safety_margin_deg
+    lo = min(args.home_position_deg, args.opposite_limit_deg) + args.safety_margin_deg
+    hi = max(args.home_position_deg, args.opposite_limit_deg) - args.safety_margin_deg
 
     def within_safe_band(deg):
         return lo <= deg <= hi
@@ -147,7 +153,8 @@ def main():
             else:
                 direction_sign = 1 if args.step_degrees >= 0 else -1
             direction_byte = 0x00 if direction_sign > 0 else 0x80
-            expected = direction_sign * abs(args.step_degrees)
+            physical_sign = -direction_sign if args.inverted else direction_sign
+            expected = physical_sign * abs(args.step_degrees)
 
             projected = prev_deg + expected
             if not within_safe_band(projected):

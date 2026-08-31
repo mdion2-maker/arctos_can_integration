@@ -494,6 +494,39 @@ This flips the earlier "loose connector" theory: a genuinely flaky connector sho
     \item Given both Joint B and Joint C -- built from the same driver/gearbox family -- have now independently converged on "motor and driver clean, gearbox at fault," consider whether this points at a systematic issue in how this gearbox family is manufactured/printed rather than two unrelated one-off defects.
 \end{itemize}
 
+\section{Session Log: Joint A -- CAN Confirmed, Bare-Motor Exoneration, and Two Script Bugs Found}
+\label{sec:session-joint-a}
+
+\subsection{Hardware identity: matches the original Joint X spec, but this driver is the CAN variant}
+A newly-connected joint, described as NEMA23, $1.8\,\mathrm{Nm}$, $2.8\,\mathrm{A}$, was labeled ``Joint A'' by the user -- the exact motor spec originally recorded for ``Joint X'' at the very start of this project (Section~\ref{sec:session-2026-08-25}, the joint whose driver turned out to be an RS485 variant, not CAN). Before assuming this was the same failed unit, the bus was scanned directly rather than trusting either the driver panel or \texttt{arctos\_controller.yaml}'s \texttt{A\_joint} entry (which is a \texttt{MKS\_42D}, NEMA17-class config and does not match this motor's spec at all). The scan found exactly one responder, at CAN ID \texttt{0x01}, with a clean checksum-verified reply -- matching \texttt{X\_joint} in the real config (\texttt{motor\_id: 1}, \texttt{gear\_ratio: 13.5}, \texttt{hardware\_type: MKS\_57D}), not \texttt{A\_joint}. This confirms two things at once: the naming the user is using for this joint does not match the letter-keyed config, and -- more importantly -- \textbf{this is a genuine CAN-responding driver}, not a repeat of the original RS485 hardware mismatch.
+
+\subsection{Bare-motor verification, decoupled from any belt/drivetrain}
+With nothing attached (the motor was not connected to any belt/pulley at the time of testing), the full diagnostic ladder used previously on Joints B and C was repeated:
+\begin{itemize}
+    \item \textbf{Link quality} (\texttt{joint\_reliability\_test.py}): 200/200 responses (100\%), 0 CRC failures, 0 encoder jitter while stationary, mean round-trip latency 3.3\,ms.
+    \item \textbf{First motion} (\texttt{joint\_micro\_move\_test.py}): commanded 300 raw counts ($\approx 0.488^\circ$), observed 301 raw counts ($\approx 0.490^\circ$) -- essentially exact, no slip.
+    \item \textbf{Monitored 3-step move} (\texttt{joint\_stepped\_move\_test.py}): three $2^\circ$ relative steps, each landing within about 1\% of commanded, no missed steps.
+    \item \textbf{Alternating statistical test} (\texttt{joint\_statistical\_reliability\_test.py}, \texttt{--gear-ratio 1.0}): 30 reps of $3^\circ$ -- \textbf{30/30 (100\%)}, both halves 100\%.
+    \item \textbf{Sustained statistical test}, run faster and with a bigger step per the user's request (speed 40 instead of the usual gentle 15, inter-rep pause cut from 2.0\,s to 0.5\,s, $25^\circ$ per rep): \textbf{10/10 (100\%)}, both halves 100\%, total travel $248.9^\circ$.
+\end{itemize}
+Same clean profile as both prior bare-motor exonerations (Joint B, Section~\ref{sec:bare-motor-exoneration}; Joint C, Section~\ref{sec:session-joint-c-followup}): this motor, driver, encoder, and CAN link are all healthy.
+
+\begin{caution}{Two real bugs found in the shared test scripts, not hardware faults -- both fixed}
+Two issues surfaced while testing Joint A that would affect any joint with the same characteristics, and have already been corrected in \texttt{joint\_stepped\_move\_test.py}, \texttt{joint\_statistical\_reliability\_test.py}, \texttt{joint\_long\_move\_monitor.py}, \texttt{joint\_position\_control\_test.py}, and \texttt{joint\_streamed\_move\_test.py}:
+\begin{enumerate}
+    \item \textbf{Safe-band ordering assumed \texttt{home\_position > opposite\_limit}.} The band was computed as \texttt{lo = opposite\_limit + margin}, \texttt{hi = home\_position - margin}. This only forms a valid ascending range when \texttt{home\_position > opposite\_limit}, which happens to be true for Joints B and C but is \emph{false} for Joint A/X (\texttt{home\_position} $= -173.5^\circ$, \texttt{opposite\_limit} $= +157.5^\circ$). With the old code this made \texttt{lo > hi}, so \emph{every} move was rejected as leaving the safe band regardless of direction. Fixed by using \texttt{lo = min(home, opposite) + margin}, \texttt{hi = max(home, opposite) - margin}, which is correct for either convention.
+    \item \textbf{The safe-band projection and the \texttt{pct} reliability metric assumed commanded sign equals physical sign.} For any joint with \texttt{inverted: true} in \texttt{arctos\_controller.yaml} (true for every joint in this project: X, Y, A, B, C), the encoder consistently moves opposite to the commanded direction byte. The pre-move safe-band check projected the \emph{commanded} sign forward, so it could both block a command that would have physically moved back into the safe band, and -- more seriously -- fail to catch a command that was nominally moving away from a limit but physically moving toward one. It also made every printed \texttt{pct} value read as roughly $-100\%$ instead of $+100\%$ on perfectly good moves (visible throughout the alternating-test output in this session), which could be mistaken for a systematic problem. Fixed by adding an opt-in \texttt{--inverted} flag to \texttt{joint\_statistical\_reliability\_test.py} that flips the sign used only for the projection and the \texttt{pct} comparison, leaving the actual command byte sent to the driver unchanged.
+\end{enumerate}
+Neither issue reflects a hardware problem; both were caught because Joint A's config has a different sign convention (\texttt{home\_position \textless\ opposite\_limit}) than Joints B and C, which is exactly the kind of case that ought to be checked before trusting a script that was only validated against one convention.
+\end{caution}
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Reconnect Joint A to its belt/drivetrain and repeat the alternating-vs-sustained comparison at realistic (coupled) load, watching specifically for the same stick-slip signature found on Joints B and C.
+    \item Pass \texttt{--inverted} on every future \texttt{joint\_statistical\_reliability\_test.py} run for a joint marked \texttt{inverted: true} in \texttt{arctos\_controller.yaml} -- i.e. essentially always, in this project.
+    \item Resolve the naming mismatch between the user's ``Joint A/B/C/X'' labels and the config's letter-keyed \texttt{A\_joint}--\texttt{C\_joint}/\texttt{X\_joint} entries before it causes a real mix-up; CAN ID \texttt{0x01} is this joint's actual identity regardless of which label is used for it.
+\end{itemize}
+
 \section{The Python Code Stack}
 To build an automated system, we separate our project into a clean library file (\texttt{mks\_driver.py}) that handles the mathematical scaling transformations, and an execution test wrapper (\texttt{run\_arm.py}).
 
