@@ -1,5 +1,12 @@
 # Arctos CAN Bus Integration — Bring-Up, Diagnostics, and Tooling
 
+> **Status: actively in progress.** This is a running lab notebook for an ongoing
+> bring-up, not a finished reference. Joints are verified one at a time and in varying
+> states of completeness; some documented findings have later been corrected (see the
+> SOP's own errata and "session log" sections for the full, honest history, including
+> mistakes and how they were found). Expect gaps, open items, and real code bugs
+> discovered and fixed along the way rather than a polished final product.
+
 This repo collects the custom tooling, diagnostic scripts, and the living Standard
 Operating Procedure (SOP) built while bringing up individual joints of an
 [Arctos](https://github.com/Arctos-Robotics/ros2_arctos) robotic arm over CAN bus with
