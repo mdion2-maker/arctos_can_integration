@@ -28,29 +28,61 @@ never needs to run with elevated privileges itself. Reading/writing CAN
 frames once can0 is up does not need root and runs as the normal user,
 matching how every script in arctos_can_control does it.
 
+The background/leaf artwork is generated entirely by generate_background.py
+in this same folder (no third-party stock image), so there is no
+redistribution-licensing question in shipping gui/assets/floral_background.png
+in this public repo.
+
 Run directly:
     python3 arctos_can_control_panel.py
 or launch via the "Arctos CAN Control Panel" entry in the application menu
 (see install_desktop_entry.sh in this same folder).
 """
 import glob
+import math
 import os
 import subprocess
 import threading
 import time
 import tkinter as tk
-from tkinter import scrolledtext
+import webbrowser
 
 try:
     import can
 except ImportError:
     can = None
 
+try:
+    from PIL import Image, ImageOps, ImageTk
+except ImportError:
+    Image = None
+    ImageOps = None
+    ImageTk = None
+
 IFACE = "can0"
 BITRATE_SLCAND_CODE = "s6"  # 500 kbit/s, per arctos_can_sop.tex
 SCAN_ID_RANGE = range(1, 21)
 READ_ENCODER = 0x31
 ENABLE_MOTOR = 0xF3
+
+SUPPORT_EMAIL = "irisdabun@gmail.com"
+
+GUI_DIR = os.path.dirname(os.path.abspath(__file__))
+BACKGROUND_PATH = os.path.join(GUI_DIR, "assets", "floral_background.png")
+
+CANVAS_WIDTH, CANVAS_HEIGHT = 560, 420
+
+# Sampled directly from the leaves in assets/floral_background.png (average
+# of green-dominant pixels), so the buttons match the actual photo rather
+# than a guessed green.
+LEAF_GREEN = "#6e8645"
+LEAF_GREEN_DARK = "#42502a"
+LEAF_GREEN_LIGHT = "#a1b086"
+LEAF_GREEN_DISABLED = "#b7bfae"
+STEM_COLOR = "#4a3f2a"
+TEXT_CREAM = "#faf7ee"
+TITLE_BROWN = "#4a3f2a"
+BEIGE_BG = "#f5f2e8"
 
 
 def checksum(motor_id, data_bytes):
@@ -193,65 +225,331 @@ def shutdown_can(log):
     return False
 
 
+def open_support_email(log):
+    subject = "Arctos CAN Control Panel - Support Request"
+    url = f"mailto:{SUPPORT_EMAIL}?subject={subject.replace(' ', '%20')}"
+    log(f"Opening default email client to {SUPPORT_EMAIL}...")
+    webbrowser.open(url)
+    return True
+
+
+def rounded_rect_points(x1, y1, x2, y2, r):
+    r = min(r, (x2 - x1) / 2, (y2 - y1) / 2)
+    return [
+        x1 + r, y1,
+        x2 - r, y1,
+        x2, y1,
+        x2, y1 + r,
+        x2, y2 - r,
+        x2, y2,
+        x2 - r, y2,
+        x1 + r, y2,
+        x1, y2,
+        x1, y2 - r,
+        x1, y1 + r,
+        x1, y1,
+    ]
+
+
+def leaf_tip_points(cx, cy, length, angle_deg):
+    """The two pointed ends of a leaf_polygon at this angle, plus the axis
+    perpendicular to the tip-to-tip line -- used to place the vein and stem
+    consistently at any rotation."""
+    rad = math.radians(angle_deg)
+    sin_a, cos_a = math.sin(rad), math.cos(rad)
+    dir_x, dir_y = -sin_a, cos_a
+    bottom = (cx + dir_x * length / 2, cy + dir_y * length / 2)
+    top = (cx - dir_x * length / 2, cy - dir_y * length / 2)
+    perp = (cos_a, sin_a)
+    return top, bottom, dir_x, dir_y, perp
+
+
+def leaf_polygon(cx, cy, length, width, angle_deg):
+    pts = []
+    steps = 14
+    for i in range(steps + 1):
+        t = i / steps
+        x = -width / 2 * math.sin(t * math.pi)
+        y = length * (t - 0.5)
+        pts.append((x, y))
+    for i in range(steps + 1):
+        t = i / steps
+        x = width / 2 * math.sin(t * math.pi)
+        y = length * (0.5 - t)
+        pts.append((x, y))
+    rad = math.radians(angle_deg)
+    cos_a, sin_a = math.cos(rad), math.sin(rad)
+    flat = []
+    for x, y in pts:
+        flat.append(cx + x * cos_a - y * sin_a)
+        flat.append(cy + x * sin_a + y * cos_a)
+    return flat
+
+
+WAVE_AMPLITUDE_DEG = 14.0
+WAVE_SPEED = 6.0  # radians/sec of oscillation while hovered
+
+
+class LeafButton:
+    """A button shaped like a leaf with a stem, filled in the green sampled
+    from the background photo, oriented at angle_deg (90 = pointed ends on
+    the left/right instead of top/bottom). Rocks side to side like it's
+    being brushed by the cursor while hovered, and highlights/greys out for
+    hover and enabled/disabled state."""
+
+    def __init__(self, canvas, cx, cy, length, width, stem_len, text, command,
+                 angle_deg=0, font=("sans-serif", 12, "bold")):
+        self.canvas = canvas
+        self.command = command
+        self.enabled = True
+        self.cx, self.cy = cx, cy
+        self.length, self.width, self.stem_len = length, width, stem_len
+        self.base_angle = angle_deg
+        self._hovering = False
+        self._wave_job = None
+        self._wave_start = 0.0
+
+        self.leaf_id = canvas.create_polygon(
+            leaf_polygon(cx, cy, length, width, angle_deg), smooth=True,
+            fill=LEAF_GREEN, outline=LEAF_GREEN_DARK, width=2)
+        self.vein_id = canvas.create_line(0, 0, 0, 0, fill=LEAF_GREEN_DARK, width=1)
+        self.stem_id = canvas.create_line(0, 0, 0, 0, 0, 0, smooth=True, fill=STEM_COLOR, width=3)
+        self._redraw(angle_deg)
+        self.text_id = canvas.create_text(cx, cy, text=text, fill=TEXT_CREAM, font=font)
+
+        for item in (self.leaf_id, self.text_id):
+            canvas.tag_bind(item, "<Enter>", self._on_enter)
+            canvas.tag_bind(item, "<Leave>", self._on_leave)
+            canvas.tag_bind(item, "<Button-1>", self._on_click)
+
+    def _redraw(self, angle_deg):
+        cx, cy, length, width = self.cx, self.cy, self.length, self.width
+        self.canvas.coords(self.leaf_id, *leaf_polygon(cx, cy, length, width, angle_deg))
+        top, bottom, dir_x, dir_y, perp = leaf_tip_points(cx, cy, length, angle_deg)
+        self.canvas.coords(self.vein_id, *top, *bottom)
+        mid = (bottom[0] + dir_x * self.stem_len * 0.6 + perp[0] * self.stem_len * 0.5,
+               bottom[1] + dir_y * self.stem_len * 0.6 + perp[1] * self.stem_len * 0.5)
+        end = (bottom[0] + dir_x * self.stem_len, bottom[1] + dir_y * self.stem_len)
+        self.canvas.coords(self.stem_id, *bottom, *mid, *end)
+
+    def _on_enter(self, _event):
+        if not self.enabled:
+            return
+        self.canvas.itemconfigure(self.leaf_id, fill=LEAF_GREEN_LIGHT)
+        self._hovering = True
+        self._wave_start = time.time()
+        if self._wave_job is None:
+            self._wave_tick()
+
+    def _on_leave(self, _event):
+        self._hovering = False
+        if self.enabled:
+            self.canvas.itemconfigure(self.leaf_id, fill=LEAF_GREEN)
+        if self._wave_job is not None:
+            self.canvas.after_cancel(self._wave_job)
+            self._wave_job = None
+        self._redraw(self.base_angle)
+
+    def _wave_tick(self):
+        if not self._hovering:
+            self._wave_job = None
+            return
+        t = time.time() - self._wave_start
+        angle = self.base_angle + WAVE_AMPLITUDE_DEG * math.sin(t * WAVE_SPEED)
+        self._redraw(angle)
+        self._wave_job = self.canvas.after(30, self._wave_tick)
+
+    def _on_click(self, _event):
+        if self.enabled and self.command:
+            self.command()
+
+    def set_enabled(self, enabled):
+        self.enabled = enabled
+        self.canvas.itemconfigure(
+            self.leaf_id, fill=LEAF_GREEN if enabled else LEAF_GREEN_DISABLED)
+
+    def reposition(self, cx, cy):
+        """Move this button to a new center, e.g. to track a window resize."""
+        self.cx, self.cy = cx, cy
+        self._redraw(self.base_angle)
+        self.canvas.coords(self.text_id, cx, cy)
+
+
+BUTTON_FONT = ("sans-serif", 12, "bold")
+SMALL_BUTTON_FONT = ("sans-serif", 10, "bold")
+LOG_FONT = ("sans-serif", 10, "bold")
+
+
 class App:
     def __init__(self, root):
         self.root = root
         root.title("Arctos CAN Control Panel")
-        root.geometry("760x420")
+        root.resizable(True, True)
+        root.minsize(CANVAS_WIDTH + 320, CANVAS_HEIGHT + 40)
+        root.geometry(f"{CANVAS_WIDTH + 320}x{CANVAS_HEIGHT + 40}")
 
-        header = tk.Label(root, text="Arctos CAN Control Panel", font=("sans-serif", 14, "bold"))
-        header.pack(pady=(12, 4))
+        # One canvas spans the whole window -- the background photo is
+        # rescaled to fill it on every resize, rather than staying confined
+        # to a fixed-size island next to a separately-colored log area.
+        self.canvas = tk.Canvas(root, highlightthickness=0, bg=BEIGE_BG)
+        self.canvas.pack(fill="both", expand=True)
 
-        subtitle = tk.Label(root, text=f"Interface: {IFACE}    |    slcand bitrate: -{BITRATE_SLCAND_CODE} (500 kbit/s)",
-                             fg="#555555")
-        subtitle.pack(pady=(0, 10))
+        self._bg_photo = None  # keep a reference so Tk doesn't garbage-collect it
+        self._bg_image_id = None
+        self._last_size = (0, 0)
+        self._resize_job = None
+        if Image is not None and os.path.exists(BACKGROUND_PATH):
+            self._bg_source = Image.open(BACKGROUND_PATH)
+        else:
+            self._bg_source = None
 
-        button_frame = tk.Frame(root)
-        button_frame.pack(pady=6)
+        self.canvas.create_text(20, 22, anchor="w", text="Arctos CAN Control Panel",
+                                 fill=TITLE_BROWN, font=("sans-serif", 15, "bold"), tags="chrome")
+        self.canvas.create_text(20, 46, anchor="w",
+                                 text=f"Interface: {IFACE}    slcand: -{BITRATE_SLCAND_CODE} (500 kbit/s)",
+                                 fill=TITLE_BROWN, font=("sans-serif", 9), tags="chrome")
 
-        self.setup_btn = tk.Button(button_frame, text="Set Up CAN", width=18, height=2,
-                                    bg="#2e7d32", fg="white", font=("sans-serif", 11, "bold"),
-                                    command=self.on_setup)
-        self.setup_btn.grid(row=0, column=0, padx=8)
+        # Leaves rotated 90 degrees from the earlier design -- pointed ends
+        # left/right instead of top/bottom -- so length/width are swapped
+        # from before to keep the same footprint, just turned sideways.
+        self.support_btn = LeafButton(self.canvas, CANVAS_WIDTH - 70, 32, length=86, width=40,
+                                       stem_len=8, text="Support", command=self.on_support,
+                                       angle_deg=90, font=SMALL_BUTTON_FONT)
 
-        self.disable_btn = tk.Button(button_frame, text="Disable Motor",
-                                      width=18, height=2, bg="#ef6c00", fg="white",
-                                      font=("sans-serif", 11, "bold"), command=self.on_disable)
-        self.disable_btn.grid(row=0, column=1, padx=8)
+        # Column sits over the clear left side of the photo and stays put on
+        # resize -- only the right side (log panel) grows into new space.
+        col_cx = 145
+        self.setup_btn = LeafButton(self.canvas, col_cx, 106, length=190, width=72, stem_len=14,
+                                     text="Set Up CAN", command=self.on_setup,
+                                     angle_deg=90, font=BUTTON_FONT)
+        self.disable_btn = LeafButton(self.canvas, col_cx, 208, length=190, width=72, stem_len=14,
+                                       text="Disable Motor", command=self.on_disable,
+                                       angle_deg=90, font=BUTTON_FONT)
+        self.shutdown_btn = LeafButton(self.canvas, col_cx, 310, length=190, width=72, stem_len=14,
+                                        text="Shut Down CAN", command=self.on_shutdown,
+                                        angle_deg=90, font=BUTTON_FONT)
+        self.action_buttons = [self.setup_btn, self.disable_btn, self.shutdown_btn]
 
-        self.shutdown_btn = tk.Button(button_frame, text="Shut Down CAN",
-                                       width=18, height=2, bg="#c62828", fg="white",
-                                       font=("sans-serif", 11, "bold"), command=self.on_shutdown)
-        self.shutdown_btn.grid(row=0, column=2, padx=8)
+        self.attribution_id = self.canvas.create_text(
+            CANVAS_WIDTH - 12, CANVAS_HEIGHT - 12, anchor="se",
+            text="Photo by Annie Spratt on Unsplash", fill=TEXT_CREAM, font=("sans-serif", 8))
 
-        self.status_var = tk.StringVar(value="Ready.")
-        status_label = tk.Label(root, textvariable=self.status_var, fg="#333333")
-        status_label.pack(pady=(6, 0))
+        self.status_id = self.canvas.create_text(
+            0, 54, anchor="nw", text="Ready.",
+            fill=LEAF_GREEN_DARK, font=SMALL_BUTTON_FONT)
 
-        self.log_widget = scrolledtext.ScrolledText(root, height=16, font=("monospace", 9))
-        self.log_widget.pack(fill="both", expand=True, padx=10, pady=10)
-        self.log_widget.configure(state="disabled")
+        self.log_text = tk.Text(self.canvas, bg="#000000", fg=LEAF_GREEN,
+                                 font=LOG_FONT, wrap="word", bd=0,
+                                 highlightthickness=0, insertbackground=LEAF_GREEN)
+        self.log_text.configure(state="disabled")
+        self.log_text_window = None
+
+        self.canvas.bind("<Configure>", self._on_resize)
+        self._layout(CANVAS_WIDTH + 320, CANVAS_HEIGHT + 40)
 
         if can is None:
             self.log("WARNING: python-can is not importable in this Python environment -- "
                       "the disable button's CAN scan will fail until that is fixed.")
+        if self._bg_source is None:
+            self.log("NOTE: Pillow is not importable -- showing a plain background instead "
+                      "of the painted one.")
+
+    def _on_resize(self, event):
+        if self._resize_job is not None:
+            self.root.after_cancel(self._resize_job)
+        self._resize_job = self.root.after(60, lambda: self._layout(event.width, event.height))
+
+    def _layout(self, w, h):
+        self._resize_job = None
+        w, h = max(w, 200), max(h, 150)
+        if (w, h) == self._last_size:
+            return
+        self._last_size = (w, h)
+
+        # The left (photo/buttons) side is always 3/8 of the window.
+        side_x1 = round(w * 3 / 8)
+
+        # Photo fills only the left side (up to where the beige log side
+        # begins), not the whole window. Uses ImageOps.fit (crop-to-cover)
+        # rather than a plain resize, which would stretch width and height
+        # independently and visibly squish the photo whenever the box's
+        # aspect ratio doesn't match the source image's.
+        if self._bg_source is not None:
+            photo_w = max(1, side_x1)
+            if ImageOps is not None:
+                resized = ImageOps.fit(self._bg_source, (photo_w, h),
+                                        method=Image.LANCZOS, centering=(0.65, 0.6))
+            else:
+                resized = self._bg_source.resize((photo_w, h))
+            self._bg_photo = ImageTk.PhotoImage(resized)
+            if self._bg_image_id is None:
+                self._bg_image_id = self.canvas.create_image(0, 0, anchor="nw", image=self._bg_photo)
+                self.canvas.tag_lower(self._bg_image_id)
+            else:
+                self.canvas.itemconfigure(self._bg_image_id, image=self._bg_photo)
+
+        col_cx = side_x1 / 2
+        self.setup_btn.reposition(col_cx, 106)
+        self.disable_btn.reposition(col_cx, 208)
+        self.shutdown_btn.reposition(col_cx, 310)
+
+        self.support_btn.reposition(w - 70, 32)
+        self.canvas.coords(self.attribution_id, side_x1 - 12, h - 12)
+
+        margin = 6
+        x1 = side_x1 + 20
+        y1, x2, y2 = 70, max(x1 + 40, w - margin), max(140, h - margin)
+
+        # A beige panel behind the log side (not just the photo showing
+        # through) -- the whole output side gets its own readable surface,
+        # like the earlier two-pane design had.
+        self.canvas.delete("log_side_bg")
+        self.canvas.create_rectangle(side_x1, 0, w, h, fill=BEIGE_BG, width=0, tags="log_side_bg")
+
+        self.canvas.delete("log_panel")
+        self.canvas.create_polygon(
+            rounded_rect_points(x1, y1, x2, y2, 20), smooth=True,
+            fill="#000000", outline=LEAF_GREEN_DARK, width=2, tags="log_panel")
+
+        # Stacking order, bottom to top: background photo, beige side panel,
+        # black log panel, then everything else (buttons/text, created
+        # earlier and left alone).
+        if self._bg_image_id is not None:
+            self.canvas.tag_lower(self._bg_image_id)
+        self.canvas.tag_lower("log_side_bg")
+        if self._bg_image_id is not None:
+            self.canvas.tag_raise("log_side_bg", self._bg_image_id)
+        self.canvas.tag_lower("log_panel")
+        self.canvas.tag_raise("log_panel", "log_side_bg")
+
+        self.canvas.coords(self.status_id, x1 + 14, 48)
+        inset = 20  # >= the polygon's own corner radius, so the widget's square
+                    # corners stay inside the rounded shape instead of poking out
+        text_x1, text_y1 = x1 + inset, y1 + inset
+        text_w = max(10, (x2 - inset) - text_x1)
+        text_h = max(10, (y2 - inset) - text_y1)
+        if self.log_text_window is None:
+            self.log_text_window = self.canvas.create_window(
+                text_x1, text_y1, anchor="nw", window=self.log_text,
+                width=text_w, height=text_h)
+        else:
+            self.canvas.coords(self.log_text_window, text_x1, text_y1)
+            self.canvas.itemconfigure(self.log_text_window, width=text_w, height=text_h)
 
     def log(self, message):
         def _append():
-            self.log_widget.configure(state="normal")
-            self.log_widget.insert("end", message + "\n")
-            self.log_widget.see("end")
-            self.log_widget.configure(state="disabled")
+            self.log_text.configure(state="normal")
+            self.log_text.insert("end", message + "\n")
+            self.log_text.see("end")
+            self.log_text.configure(state="disabled")
         self.root.after(0, _append)
 
     def set_buttons_enabled(self, enabled):
-        state = "normal" if enabled else "disabled"
-        self.setup_btn.configure(state=state)
-        self.disable_btn.configure(state=state)
-        self.shutdown_btn.configure(state=state)
+        for btn in self.action_buttons:
+            btn.set_enabled(enabled)
 
     def set_status(self, text):
-        self.root.after(0, lambda: self.status_var.set(text))
+        self.root.after(0, lambda: self.canvas.itemconfigure(self.status_id, text=text))
 
     def run_in_background(self, target, busy_status):
         self.set_buttons_enabled(False)
@@ -276,6 +574,9 @@ class App:
 
     def on_shutdown(self):
         self.run_in_background(shutdown_can, "Shutting down CAN (a password prompt may appear)...")
+
+    def on_support(self):
+        self.run_in_background(open_support_email, "Opening your email client...")
 
 
 def main():

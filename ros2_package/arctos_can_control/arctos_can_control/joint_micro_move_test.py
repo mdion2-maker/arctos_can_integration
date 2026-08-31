@@ -17,8 +17,22 @@ Protocol (confirmed against motor_types.hpp / can_protocol.cpp, the same
 opcodes the real arctos_motor_driver C++ node uses):
     0x31 READ_ENCODER      -> 48-bit signed big-endian raw counts, 16384 counts/rev
     0xF3 ENABLE_MOTOR       -> [0xF3, 0x01]/[0xF3, 0x00]
-    0xF5 ABSOLUTE_POSITION  -> [0xF5, speed_hi, speed_lo, accel, pos_hi, pos_mid, pos_lo]
+    0xFD POSITION_CONTROL   -> [0xFD, direction|speed_hi_nibble, speed_lo, accel, pulses_hi, pulses_mid, pulses_lo]
     0xF7 EMERGENCY_STOP     -> [0xF7]
+
+CAUTION -- do not switch this back to 0xF5 ABSOLUTE_POSITION with a raw
+two's-complement-packed target. On 2026-08-31, that exact approach caused a
+real incident on Joint B: after extensive earlier un-homed testing, its raw
+encoder position had drifted to roughly -274,000 counts, and packing
+`target_raw = raw0 + delta_counts` as `int(target_raw) & 0xFFFFFF` produced a
+bit pattern the driver read as an enormous, wrong target (~8.1M pulses,
+~178,000 degrees) -- a small 300-count nudge turned into a large,
+uninterrupted, non-settling motion that had to be stopped by cutting motor
+power. This script now uses POSITION_CONTROL (0xFD) instead, the same
+direction-byte-plus-always-positive-magnitude pattern already proven safe
+across every joint in this project via joint_statistical_reliability_test.py
+-- it never depends on the current absolute position, so it cannot repeat
+this failure no matter how far a joint's raw counter has drifted.
 
 Every frame this script sends -- including EMERGENCY_STOP -- is checksummed
 via send_frame()/checksum() below, matching motor_driver.cpp's sendFrame(),
@@ -51,10 +65,13 @@ import can
 
 READ_ENCODER = 0x31
 ENABLE_MOTOR = 0xF3
-ABSOLUTE_POSITION = 0xF5
+POSITION_CONTROL = 0xFD
 EMERGENCY_STOP = 0xF7
 
 ENCODER_CPR = 16384
+MICROSTEPS_PER_MOTOR_REV = 3200.0  # 200 full steps/rev x 16 microsteps/step -- POSITION_CONTROL's
+                                    # pulses field is in THIS scale, not ENCODER_CPR. Mixing the two
+                                    # up once produced a 16384/3200 = 5.12x magnitude error here.
 TEST_DELTA_COUNTS = 300  # small raw-encoder-scale move; re-check sign/magnitude live
 SPEED = 15
 ACCEL = 2
@@ -99,10 +116,13 @@ def emergency_stop(bus, motor_id):
     send_frame(bus, motor_id, [EMERGENCY_STOP])
 
 
-def move_absolute_raw(bus, motor_id, target_raw, speed, accel):
-    pos = int(target_raw) & 0xFFFFFF
-    data = [ABSOLUTE_POSITION, (speed >> 8) & 0xFF, speed & 0xFF, accel,
-             (pos >> 16) & 0xFF, (pos >> 8) & 0xFF, pos & 0xFF]
+def move_position_control(bus, motor_id, pulses, speed, accel, direction):
+    """Always-positive magnitude + separate direction byte -- see the CAUTION
+    in this file's module docstring for why this replaced an absolute-target
+    encoding that broke once a joint's raw counter drifted far from zero."""
+    pulses = int(pulses) & 0xFFFFFF
+    data = [POSITION_CONTROL, direction + ((speed >> 8) & 0b1111), speed & 0xFF, accel,
+            (pulses >> 16) & 0xFF, (pulses >> 8) & 0xFF, pulses & 0xFF]
     return send_frame(bus, motor_id, data)
 
 
@@ -142,8 +162,9 @@ def main():
             return
 
         enable_motor(bus, args.can_id)
-        target_raw = raw0 + args.delta_counts
-        frame = move_absolute_raw(bus, args.can_id, target_raw, SPEED, ACCEL)
+        direction = 0x00 if args.delta_counts >= 0 else 0x80
+        pulses = round(abs(args.delta_counts) * MICROSTEPS_PER_MOTOR_REV / ENCODER_CPR)
+        frame = move_position_control(bus, args.can_id, pulses, SPEED, ACCEL, direction)
         print(f"Sent frame: {[hex(b) for b in frame]}")
 
         print("Watching position for 5s (Ctrl+C to emergency-stop immediately)...")

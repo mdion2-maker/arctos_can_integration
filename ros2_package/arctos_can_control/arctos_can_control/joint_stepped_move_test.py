@@ -27,6 +27,25 @@ of a false-positive trip, not just a real one. It is OFF BY DEFAULT here
 A trip also latches the driver down (see this document's Section 1) and
 requires a power-cycle to clear, expensive to trigger by accident.
 
+CAUTION (2026-08-31) -- --mode absolute is suspected unsafe once a joint's
+raw counter has drifted far from zero. joint_micro_move_test.py used this
+exact pattern (pos_field = an absolute raw target, packed via a plain
+`& 0xFFFFFF`) and caused a real incident on Joint B: a small intended nudge
+turned into an enormous, non-settling, uninterrupted move once the joint's
+absolute position had drifted to roughly -274,000 counts from earlier
+un-homed testing, requiring motor power to be cut. This script's absolute
+mode sends `pos_field = target_raw` (= current_raw + step_counts) through
+the identical unguarded packing -- it has the same exposure and has not yet
+been fixed or re-verified safe. --mode relative sends only a small signed
+`step_counts` delta, which is lower-risk but still packs a possibly-negative
+value the same way, rather than splitting it into a direction byte plus an
+always-positive magnitude like the proven-safe pattern in
+joint_statistical_reliability_test.py / joint_position_control_test.py
+(POSITION_CONTROL, 0xFD). Until this script is updated to match that
+pattern, prefer those two for actual motion testing, and treat any past
+--mode absolute result run against a joint with an unknown/large drifted
+position as unverified.
+
 Usage:
     python3 joint_stepped_move_test.py --can-id 0x05 --gear-ratio 67.82 \\
         --home-position-deg 12.873 --opposite-limit-deg -24.230 \\

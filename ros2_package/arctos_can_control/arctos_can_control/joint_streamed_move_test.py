@@ -16,6 +16,20 @@ error/protection flag ever set) regardless of speed/accel settings. This
 script sends the total move as many small RELATIVE_POSITION increments in
 rapid succession instead, to test whether that avoids the same behavior.
 
+CAUTION (2026-08-31) -- move_relative() below packs a possibly-negative
+`delta_counts` via a plain `int(delta_counts) & 0xFFFFFF`, rather than
+splitting sign into a direction byte and sending only an always-positive
+magnitude. joint_micro_move_test.py used this same kind of unguarded packing
+(for an absolute target, not a relative one) and caused a real incident on
+Joint B -- a small intended move turned into an enormous, non-settling one
+once the joint's raw position had drifted far from zero, requiring motor
+power to be cut. Whether a small negative relative delta is actually affected
+the same way has not been verified here. Until it is, prefer
+joint_statistical_reliability_test.py or joint_position_control_test.py
+(POSITION_CONTROL, 0xFD, direction byte + always-positive magnitude -- the
+pattern proven safe across every joint in this project) for real motion
+testing.
+
 Usage:
     python3 joint_streamed_move_test.py --can-id 0x05 --gear-ratio 67.82 \\
         --home-position-deg 12.873 --opposite-limit-deg -24.230 \\
