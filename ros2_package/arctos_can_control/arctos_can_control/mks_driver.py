@@ -12,13 +12,15 @@ class MKSServoDriver:
     def __init__(self, channel="can0", interface="socketcan"):
         self.bus = can.interface.Bus(channel=channel, interface=interface)
         
-        # Empirical conversion metrics derived from physical testing
-        # 1 commanded pulse = -0.947 raw encoder counts
-        # Joint B composite resolution = -3259.3 commanded pulses per degree
-        self.PULSES_PER_DEGREE = 679.0
+        # Microstep pulse scale, matching set_zero_position.py: 200 full
+        # steps/rev x 16 microsteps/step = 3200 pulses per motor revolution.
+        # This is NOT the 16384-count magnetic encoder scale used by 0x31.
+        self.MICROSTEPS_PER_MOTOR_REV = 3200.0
+        self.PULSES_PER_MOTOR_DEGREE = self.MICROSTEPS_PER_MOTOR_REV / 360.0
         self.GEAR_RATIO = 67.82
 
-        # Combined resolution: ~46,049.78 pulses per 1 degree of real arm movement
+        # ~602.844 commanded pulses per 1 degree of real arm movement.
+        # Negative because these joints are configured inverted.
         self.PULSES_PER_DEGREE = -(self.PULSES_PER_MOTOR_DEGREE * self.GEAR_RATIO)
         self.ENCODER_CPR = 16384
 

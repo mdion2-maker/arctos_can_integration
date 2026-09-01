@@ -107,14 +107,15 @@ Each joint on the network operates using a specific identifier (CAN ID). When se
 Joint X              & Base/waist rotation (first joint from \texttt{base\_link}) & \texttt{0x01} & 500 kbit/s \\
 Joint Y              & (role not confirmed in repo docs) & \texttt{0x02}         & 500 kbit/s               \\
 Joint Z              & (role not confirmed in repo docs) & \texttt{0x03}         & 500 kbit/s               \\
-Joint A              & (role not confirmed in repo docs) & \texttt{0x04}         & 500 kbit/s               \\
+Joint A              & Elbow & \texttt{0x04}         & 500 kbit/s               \\
 Joint B              & Wrist Rotation         & \texttt{0x05}         & 500 kbit/s               \\
-Joint C              & Elbow Pitch (per project convention; note this is the \emph{last} joint before the end effector in the URDF kinematic chain, so double check this label if it matters for your work) & \texttt{0x06} in config, \textbf{but \texttt{0x01} confirmed on the actual bus} (Table~\ref{tab:joint-instances}) & 500 kbit/s \\ \bottomrule
+Joint C              & Wrist joint (confirmed with the machine's owner, 2026-09-01 -- consistent with this being the \emph{last} joint before the end effector in the URDF kinematic chain; earlier drafts of this table wrongly called it Elbow Pitch) & \texttt{0x06} (per \texttt{arctos\_controller.yaml}; the motor was found at \texttt{0x05} on 2026-09-01 and is being reprogrammed to \texttt{0x06} to match -- rescan to confirm) & 500 kbit/s \\ \bottomrule
 \end{tabular}
 \caption{Arctos Arm Network Node Mappings, per \texttt{motor\_id} in \texttt{arctos\_description/config/arctos\_controller.yaml} -- the real 6-joint arm configuration. \textbf{Confirm every value in this table empirically with \texttt{can\_id\_scan.py} before trusting it} -- Joint C's CAN ID was listed as \texttt{0x03} in earlier drafts of this document and in other guide documents in this project (that value is actually Joint Z's ID in a separate, simplified 3-joint test-rig config, \texttt{arctos\_moveit\_base\_xyz/config/ros2\_controllers.yaml}), and Joint X's DIP switches turned out not to map to any CAN ID at all once it was discovered that driver was the RS485 hardware variant (Section~\ref{sec:troubleshoot-rs485}).}
 \end{table}
 
 \subsection{Bringing Up the SocketCAN Network (First Time SOP)}
+\label{sec:can-bringup}
 Every time you plug the CANable adapter into your Ubuntu computer, you must bridge the serial hardware interface to the Linux networking core. Follow these steps exactly:
 
 \begin{lstlisting}[language=bash, caption=Linux Terminal CAN Interface Setup]
@@ -150,10 +151,10 @@ sudo ./scripts/setup_canable.sh
 
 \section{Protocol Errata: Reconciling This Project's Debugging Documents}
 \label{sec:errata}
-This workspace accumulated several other debugging documents alongside this one -- \texttt{arctos\_CAN\_ROS2\_SOP\_updated.tex}, \texttt{arctos\_joint\_b\_guide.tex}, and \texttt{arctos\_motor\_can\_cheat\_sheet\_updated.md} -- written at different points while reverse-engineering the same MKS CAN protocol. They do not fully agree with each other. Rather than silently pick one, this section cross-checks the disagreements directly against the real source (\texttt{motor\_types.hpp}, \texttt{can\_protocol.cpp}, \texttt{motor\_driver.cpp}) and records the resolution here, since that source is the actual ground truth for what the C++ ROS~2 driver will do.
+This workspace accumulated several other debugging documents alongside this one -- \texttt{arctos\_CAN\_ROS2\_SOP\_updated.tex}, \texttt{arctos\_joint\_b\_guide.tex} (since removed --- its content was consolidated into \texttt{arctos\_motor\_guide.tex}), and \texttt{arctos\_motor\_can\_cheat\_sheet\_updated.md} -- written at different points while reverse-engineering the same MKS CAN protocol. They do not fully agree with each other. Rather than silently pick one, this section cross-checks the disagreements directly against the real source (\texttt{motor\_types.hpp}, \texttt{can\_protocol.cpp}, \texttt{motor\_driver.cpp}) and records the resolution here, since that source is the actual ground truth for what the C++ ROS~2 driver will do.
 
 \begin{caution}{Encoder read opcode: use \texttt{0x31}, not \texttt{0x30}}
-\texttt{arctos\_joint\_b\_guide.tex} (the older of the two documents) standardizes on \texttt{0x30} as ``the confirmed encoder read command,'' describing a carry+value response format, and treats \texttt{0x31} as unconfirmed. This does not hold up: \texttt{motor\_types.hpp} defines \texttt{READ\_ENCODER = 0x31} and no \texttt{0x30} command at all -- the only place \texttt{0x30} appears anywhere in \texttt{arctos\_motor\_driver}'s source is as raw test-fixture bytes for an unrelated velocity-decoding unit test, not a CAN command opcode. \texttt{arctos\_CAN\_ROS2\_SOP\_updated.tex} reaches the correct conclusion (\texttt{0x31}, decoded via the 48-bit \texttt{decodeInt48()} format used throughout this document) by citing the same source files. \textbf{Use \texttt{0x31} with the 48-bit decode, as every script in this package already does.} Consequently, the old \texttt{mks\_driver.py}'s \texttt{read\_absolute\_encoder()} (in both \texttt{arctos\_can} and the early \texttt{arctos\_can\_control} draft), which sends \texttt{0x30}, is querying a command the real driver does not define and should not be trusted or built upon.
+\texttt{arctos\_joint\_b\_guide.tex} (now removed; it was the older of the two documents) standardized on \texttt{0x30} as ``the confirmed encoder read command,'' describing a carry+value response format, and treats \texttt{0x31} as unconfirmed. This does not hold up: \texttt{motor\_types.hpp} defines \texttt{READ\_ENCODER = 0x31} and no \texttt{0x30} command at all -- the only place \texttt{0x30} appears anywhere in \texttt{arctos\_motor\_driver}'s source is as raw test-fixture bytes for an unrelated velocity-decoding unit test, not a CAN command opcode. \texttt{arctos\_CAN\_ROS2\_SOP\_updated.tex} reaches the correct conclusion (\texttt{0x31}, decoded via the 48-bit \texttt{decodeInt48()} format used throughout this document) by citing the same source files. \textbf{Use \texttt{0x31} with the 48-bit decode, as every script in this package already does.} Consequently, the old \texttt{mks\_driver.py}'s \texttt{read\_absolute\_encoder()} (in both \texttt{arctos\_can} and the early \texttt{arctos\_can\_control} draft), which sends \texttt{0x30}, is querying a command the real driver does not define and should not be trusted or built upon.
 \end{caution}
 
 \begin{caution}{Checksum required on every frame, including disable and emergency stop}
@@ -178,7 +179,7 @@ This project's actual practice has been to wire up and bring up \textbf{one join
 \toprule
 \textbf{Joint} & \textbf{CAN ID} & \textbf{Driver} & \textbf{Motor} & \textbf{Gear ratio} \\ \midrule
 X & \texttt{0x01} (per YAML; driver was actually RS485, Sec.~\ref{sec:troubleshoot-rs485}) & MKS\_57D & NEMA23, 1.8\,Nm, 2.8\,A, 6.35\,mm shaft & 13.5:1 \\
-C & \texttt{0x06} per \texttt{arctos\_controller.yaml}, \texttt{0x03} per older project docs -- \textbf{neither correct; confirmed \texttt{0x01} via \texttt{can\_id\_scan.py} against real hardware} & MKS\_42D & NEMA17, 24\,N\textperiodcentered cm, 1.2\,A, 5\,mm shaft (same family as Joint B) & 67.82:1 \\ \bottomrule
+C & \texttt{0x06} per \texttt{arctos\_controller.yaml}, \texttt{0x03} per older project docs -- \textbf{found at \texttt{0x05} via \texttt{can\_id\_scan.py} on 2026-09-01; the motor is being reprogrammed to \texttt{0x06} to match the YAML} & MKS\_42D & NEMA17, 24\,N\textperiodcentered cm, 1.2\,A, 5\,mm shaft (same family as Joint B) & 67.82:1 \\ \bottomrule
 \end{tabular}
 \caption{Joint instances bench-tested with this procedure so far. Both \texttt{inverted=true}, both \texttt{requires\_homing=false} per \texttt{arctos\_controller.yaml}. Encoder resolution is 16384 counts/motor-revolution for both.}
 \label{tab:joint-instances}
@@ -208,12 +209,13 @@ Before commanding any motion, verify the CAN link to this joint is actually trus
 # Joint C example -- substitute the confirmed CAN ID and correct gear ratio
 # from Table 3 for whichever joint is actually wired up.
 python3 src/arctos_can_control/arctos_can_control/joint_reliability_test.py \
-    --channel can0 --can-id 0x01 --gear-ratio 67.82 --samples 200
+    --channel can0 --can-id 0x06 --gear-ratio 67.82 --samples 200
 \end{lstlisting}
 
 The script reports a response rate, checksum failure count, round-trip latency, and stationary encoder jitter, then prints a plain-language verdict on whether the link is clean enough to move on to Step 3. Do not proceed to Step 3 until response rate is above 95\% with zero checksum failures.
 
 \subsection{Step 3 -- Supervised First-Motion Test}
+\label{sec:safe-test}
 \textbf{Run this yourself, standing next to the arm with a hand on the power switch. Do not run it unattended or from a remote session.} If this is a joint's first-ever motion test, its coils have never been energized before and it has no calibrated travel limits yet, so nothing in software stops it from driving into a mechanical hard stop if a sign or scale assumption below turns out wrong.
 
 \begin{lstlisting}[language=bash, caption=Supervised Joint Tiny-Move Test]
@@ -222,18 +224,18 @@ candump -tz can0
 
 # In your main terminal (Joint C example):
 python3 src/arctos_can_control/arctos_can_control/joint_micro_move_test.py \
-    --can-id 0x01 --gear-ratio 67.82
+    --can-id 0x06 --gear-ratio 67.82
 \end{lstlisting}
 
-The script prints the starting encoder position, then requires you to type \texttt{go} before it enables coils and commands a small (\textasciitilde0.1--0.3\textdegree{} of joint travel) absolute move, printing live position every half second so you can watch for stall or runaway behavior. Ctrl+C at any point sends an immediate, checksummed \texttt{0xF7} emergency stop -- the script prints the exact checksummed frame for whichever CAN ID you passed it at startup, so you can also trigger it manually from another terminal at any time, e.g. for Joint C (confirmed \texttt{0x01}): \texttt{0xF7+0x01=0xF8}:
+The script prints the starting encoder position, then requires you to type \texttt{go} before it enables coils and commands a small (\textasciitilde0.1--0.3\textdegree{} of joint travel) absolute move, printing live position every half second so you can watch for stall or runaway behavior. Ctrl+C at any point sends an immediate, checksummed \texttt{0xF7} emergency stop -- the script prints the exact checksummed frame for whichever CAN ID you passed it at startup, so you can also trigger it manually from another terminal at any time, e.g. for Joint C (\texttt{0x06} once reprogrammed): \texttt{0xF7+0x01=0xF8}:
 
 \begin{lstlisting}[language=bash, caption=Emergency Stop for Joint C]
-cansend can0 001#F7F8
+cansend can0 006#F7FD
 \end{lstlisting}
 
 \subsubsection{Troubleshooting: Enable Acknowledged, But No Holding Torque}
 \label{sec:troubleshoot-no-torque}
-Joint C's actual bench test hit this: \texttt{can\_id\_scan.py} found it at \texttt{0x01} (not \texttt{0x06} per \texttt{arctos\_controller.yaml}, not \texttt{0x03} per older docs), Step~2's reliability test came back perfect (100\% response rate, 0 checksum failures, 0 encoder jitter), and \texttt{ENABLE\_MOTOR} was checksum-accepted with \texttt{READ\_ENABLE\_STATE (0x3A)} confirming a flip from disabled to enabled -- but the shaft still spun completely freely by hand, with no holding torque at all, and a commanded \texttt{0xF5} move produced zero encoder change over several seconds.
+Joint C's actual bench test hit this: \texttt{can\_id\_scan.py} found it at \texttt{0x05} (not \texttt{0x06} per \texttt{arctos\_controller.yaml}, not \texttt{0x03} per older docs), Step~2's reliability test came back perfect (100\% response rate, 0 checksum failures, 0 encoder jitter), and \texttt{ENABLE\_MOTOR} was checksum-accepted with \texttt{READ\_ENABLE\_STATE (0x3A)} confirming a flip from disabled to enabled -- but the shaft still spun completely freely by hand, with no holding torque at all, and a commanded \texttt{0xF5} move produced zero encoder change over several seconds.
 
 The real \texttt{arctos\_hardware\_interface} source (\texttt{arctos\_interface.cpp}'s \texttt{setupMotorParameters()}) sends \texttt{SET\_WORKING\_MODE (0x82)} with \texttt{MotorMode::SR\_vFOC} (value \texttt{5}) to every joint before ever enabling it -- something none of the raw Python scripts in this document had been doing. Sending that first (\texttt{cansend can0 001\#820588} for CAN ID \texttt{0x01}: $0x82+0x05+0x01=0x88$) did make \texttt{READ\_ENABLE\_STATE} flip from \texttt{0} to \texttt{1} on the next enable -- but the shaft was still free-spinning, meaning that CAN-reported flag does not by itself confirm the coils are actually driven. \texttt{motor\_types.hpp} also defines \texttt{SET\_CURRENT (0x83)} (payload: 16-bit little-endian mA) with a source default of \texttt{working\_current\{1600\}}, and its setter is likewise never actually called anywhere in the real ROS~2 stack (the call site in \texttt{setupMotorParameters()} is commented out) -- so it depends entirely on whatever the panel has stored. Explicitly setting it to this motor family's documented rated current (1200\,mA) before enabling made no difference either.
 
@@ -291,7 +293,7 @@ All of the following were tested (via direct CAN commands and/or the driver's ow
 \begin{itemize}
     \item \textbf{Phase resistance check}: with power off, measure resistance across each of the two motor phase-wire pairs directly at the driver-to-motor connector (a healthy phase for this motor class should read roughly 1--5\,$\Omega$; open/infinite indicates a broken phase). Not done today -- no multimeter was available.
     \item \textbf{Component swap test}: temporarily connect Joint B's known-working motor to Joint C's driver (or Joint C's motor to Joint B's driver) to isolate whether the fault is in the driver or in the motor/cable. Not attempted today.
-    \item \textbf{Live comparison against Joint B}: the written guide documents describing Joint B's setup (\texttt{arctos\_CAN\_ROS2\_SOP\_updated.tex}, \texttt{arctos\_joint\_b\_guide.tex}, the cheat sheet) all still describe Joint B's own motion as unconfirmed as of Aug 19--20, even though Joint B has since been confirmed to move -- whatever actually fixed it isn't recorded in any document in this workspace. Check Joint B's driver's \emph{actual current} panel settings directly (working mode, current, CANRSP) and compare against whatever Joint C ends up needing, rather than trusting the stale written docs.
+    \item \textbf{Live comparison against Joint B}: the written guide documents describing Joint B's setup (\texttt{arctos\_CAN\_ROS2\_SOP\_updated.tex}, the since-removed \texttt{arctos\_joint\_b\_guide.tex}, the cheat sheet) all still describe Joint B's own motion as unconfirmed as of Aug 19--20, even though Joint B has since been confirmed to move -- whatever actually fixed it isn't recorded in any document in this workspace. Check Joint B's driver's \emph{actual current} panel settings directly (working mode, current, CANRSP) and compare against whatever Joint C ends up needing, rather than trusting the stale written docs.
     \item \texttt{SET\_ENABLE\_SETTINGS (0x85)} exists in \texttt{motor\_types.hpp} but its payload format is undocumented anywhere in this project and was deliberately not guessed at. If the panel exposes an equivalent enable-pin/enable-source setting, check it there instead.
 \end{itemize}
 
@@ -318,7 +320,7 @@ CANRSP & Enable \\ \bottomrule
 \textbf{This is a new working mode not yet tried on Joint C} -- Joint C testing on 2026-08-25 covered \texttt{SR\_vFOC} (5), \texttt{CR\_vFOC}/\texttt{CR\_FOC} (2), and \texttt{CR\_CLOSE} (1), but not \texttt{SR\_CLOSE} (4). Next Joint C session: set \texttt{SR\_CLOSE} + 1600\,mA + confirm CANRSP=Enable, then re-run the hold-enable test.
 
 \subsection{20-degree monitored move test on Joint B: real motion, but not reliably reproducible per-command}
-With Joint B confirmed healthy, a user-requested $\sim$20\textdegree{} joint move was run as 5 monitored steps of 4\textdegree{} each (Section~\ref{sec:motion}'s absolute-vs-relative ambiguity for \texttt{0xF5} was never resolved, so the incremental approach from Section~\ref{sec:safe-test} was used rather than a single blind large command). Starting position was $\approx 0.00\textdegree{}$, well inside the calibrated envelope (\texttt{home\_position}=$+12.87\textdegree{}$, \texttt{opposite\_limit}=$-24.23\textdegree{}$ per \texttt{arctos\_controller.yaml}).
+With Joint B confirmed healthy, a user-requested $\sim$20\textdegree{} joint move was run as 5 monitored steps of 4\textdegree{} each (Section~\ref{sec:errata}'s absolute-vs-relative ambiguity for \texttt{0xF5} was never resolved, so the incremental approach from Section~\ref{sec:safe-test} was used rather than a single blind large command). Starting position was $\approx 0.00\textdegree{}$, well inside the calibrated envelope (\texttt{home\_position}=$+12.87\textdegree{}$, \texttt{opposite\_limit}=$-24.23\textdegree{}$ per \texttt{arctos\_controller.yaml}).
 
 \textbf{Result: Step 1 produced real motion in the wrong direction and wrong magnitude} (commanded $+4\textdegree{}$, actual $-1.84\textdegree{}$), after which \textbf{Steps 2--5 produced essentially no further motion} (each $<0.001\textdegree{}$) despite each commanding a distinct new absolute target. No protection/stall flag was ever set; final position ($-1.85\textdegree{}$) stayed safely inside the envelope. The incremental/monitored design caught this after a small, safe excursion rather than after a blind full-magnitude commit.
 

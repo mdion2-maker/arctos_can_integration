@@ -84,8 +84,8 @@ Robotic arm joints, even small hobby ones, carry enough torque to pinch fingers 
 \begin{tabular}{llll}
 \toprule
 \textbf{Joint} & \textbf{Physical Role} & \textbf{CAN ID (hex)} & \textbf{Bitrate} \\ \midrule
-Joint A & Base rotation & \texttt{0x01} & 500~kbit/s \\
-Joint C & Elbow pitch   & \texttt{0x03} & 500~kbit/s \\
+Joint A & Elbow & \texttt{0x04} & 500~kbit/s \\
+Joint C & Wrist joint  & \texttt{0x06} & 500~kbit/s \\
 Joint B & Wrist rotation & \texttt{0x05} & 500~kbit/s \\ \bottomrule
 \end{tabular}
 \caption{Arctos CAN node map. Only Joint~B (\texttt{0x05}) has been bench-tested in this guide; A and C are included for reference and use the same protocol.}
