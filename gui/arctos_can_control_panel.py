@@ -2,13 +2,18 @@
 """
 arctos_can_control_panel.py
 
-Small desktop app with three buttons for the CANable bring-up/shutdown
+Small desktop app with four buttons for the CANable bring-up/shutdown
 routine documented in arctos_can_sop.tex:
 
   "Set Up CAN"      -- binds the CANable adapter to can0 at 500 kbit/s
                         (slcand -s6, matching the corrected
                         scripts/setup_canable.sh), after it has been plugged
                         into the VirtualBox VM's USB.
+  "Enable Motor"    -- scans the bus for any responding joint and sends it
+                        an explicit enable (0xF3 0x01). The joint starts
+                        holding position as soon as this lands, so it can
+                        move if it was left off-target -- keep clear of the
+                        arm before using it.
   "Disable Motor"   -- scans the bus for any responding joint and sends it
                         an explicit disable (0xF3 0x00). Does not touch the
                         CAN interface itself.
@@ -35,7 +40,7 @@ in this public repo.
 
 Run directly:
     python3 arctos_can_control_panel.py
-or launch via the "Arctos CAN Control Panel" entry in the application menu
+or launch via the "CAN Control Panel" entry in the application menu
 (see install_desktop_entry.sh in this same folder).
 """
 import glob
@@ -148,47 +153,73 @@ def setup_can(log):
     return False
 
 
-def scan_and_disable(log):
-    """Read-only scan for responders, then explicit disable for each one found.
-    Returns the list of CAN IDs that were found and disabled."""
+def scan_for_responders(bus, log):
+    """Read-only scan of SCAN_ID_RANGE. Returns the CAN IDs that answered."""
+    found = []
+    log(f"Scanning CAN IDs {SCAN_ID_RANGE.start}-{SCAN_ID_RANGE.stop - 1} for responders...")
+    for motor_id in SCAN_ID_RANGE:
+        while bus.recv(timeout=0.0) is not None:
+            pass
+        data = [READ_ENCODER]
+        crc = checksum(motor_id, data)
+        bus.send(can.Message(arbitration_id=motor_id, data=data + [crc], is_extended_id=False))
+        end = time.time() + 0.3
+        responded = False
+        while time.time() < end:
+            resp = bus.recv(timeout=max(0.0, end - time.time()))
+            if resp and resp.arbitration_id == motor_id and len(resp.data) >= 2 and resp.data[0] == READ_ENCODER:
+                responded = True
+                break
+        if responded:
+            log(f"  0x{motor_id:02X}: responded")
+            found.append(motor_id)
+    return found
+
+
+def scan_and_set_enable(log, enable):
+    """Read-only scan for responders, then an explicit enable (0xF3 0x01) or
+    disable (0xF3 0x00) for each one found. Returns the list of CAN IDs that
+    were found and commanded."""
     if can is None:
         log("ERROR: python-can is not installed for this Python interpreter.")
         return []
 
-    found = []
+    word = "ENABLE" if enable else "DISABLE"
     bus = can.interface.Bus(channel=IFACE, interface="socketcan")
     try:
-        log(f"Scanning CAN IDs {SCAN_ID_RANGE.start}-{SCAN_ID_RANGE.stop - 1} for responders...")
-        for motor_id in SCAN_ID_RANGE:
-            while bus.recv(timeout=0.0) is not None:
-                pass
-            data = [READ_ENCODER]
-            crc = checksum(motor_id, data)
-            bus.send(can.Message(arbitration_id=motor_id, data=data + [crc], is_extended_id=False))
-            end = time.time() + 0.3
-            responded = False
-            while time.time() < end:
-                resp = bus.recv(timeout=max(0.0, end - time.time()))
-                if resp and resp.arbitration_id == motor_id and len(resp.data) >= 2 and resp.data[0] == READ_ENCODER:
-                    responded = True
-                    break
-            if responded:
-                log(f"  0x{motor_id:02X}: responded")
-                found.append(motor_id)
-
+        found = scan_for_responders(bus, log)
         if not found:
-            log("No joints responded -- nothing to disable.")
+            log(f"No joints responded -- nothing to {word.lower()}.")
             return []
 
         for motor_id in found:
-            data = [ENABLE_MOTOR, 0x00]
+            data = [ENABLE_MOTOR, 0x01 if enable else 0x00]
             crc = checksum(motor_id, data)
             bus.send(can.Message(arbitration_id=motor_id, data=data + [crc], is_extended_id=False))
-            log(f"  Sent DISABLE to 0x{motor_id:02X}")
+            log(f"  Sent {word} to 0x{motor_id:02X}")
         time.sleep(0.3)
         return found
     finally:
         bus.shutdown()
+
+
+def enable_motor(log):
+    log("=== Enable Motor ===")
+    log("CAUTION: an enabled joint holds position under power and can move. "
+        "Keep clear of the arm.")
+    if not can0_is_up():
+        log(f"{IFACE} is not up -- run \"Set Up CAN\" first.")
+        return False
+
+    try:
+        enabled = scan_and_set_enable(log, enable=True)
+    except Exception as e:
+        log(f"ERROR while scanning/enabling over CAN: {e}")
+        return False
+
+    if enabled:
+        log(f"Enabled {len(enabled)} joint(s): {[hex(i) for i in enabled]}")
+    return True
 
 
 def disable_motor(log):
@@ -198,7 +229,7 @@ def disable_motor(log):
         return True
 
     try:
-        disabled = scan_and_disable(log)
+        disabled = scan_and_set_enable(log, enable=False)
     except Exception as e:
         log(f"ERROR while scanning/disabling over CAN: {e}")
         return False
@@ -226,7 +257,7 @@ def shutdown_can(log):
 
 
 def open_support_email(log):
-    subject = "Arctos CAN Control Panel - Support Request"
+    subject = "CAN Control Panel - Support Request"
     url = f"mailto:{SUPPORT_EMAIL}?subject={subject.replace(' ', '%20')}"
     log(f"Opening default email client to {SUPPORT_EMAIL}...")
     webbrowser.open(url)
@@ -376,6 +407,7 @@ class LeafButton:
 
 
 BUTTON_FONT = ("sans-serif", 12, "bold")
+BUTTON_MAX_SPACING = 102  # leaf is 72 tall, so this keeps a 30px gap at most sizes
 SMALL_BUTTON_FONT = ("sans-serif", 10, "bold")
 LOG_FONT = ("sans-serif", 10, "bold")
 
@@ -383,7 +415,7 @@ LOG_FONT = ("sans-serif", 10, "bold")
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("Arctos CAN Control Panel")
+        root.title("CAN Control Panel")
         root.resizable(True, True)
         root.minsize(CANVAS_WIDTH + 320, CANVAS_HEIGHT + 40)
         root.geometry(f"{CANVAS_WIDTH + 320}x{CANVAS_HEIGHT + 40}")
@@ -403,7 +435,7 @@ class App:
         else:
             self._bg_source = None
 
-        self.canvas.create_text(20, 22, anchor="w", text="Arctos CAN Control Panel",
+        self.canvas.create_text(20, 22, anchor="w", text="CAN Control Panel",
                                  fill=TITLE_BROWN, font=("sans-serif", 15, "bold"), tags="chrome")
         self.canvas.create_text(20, 46, anchor="w",
                                  text=f"Interface: {IFACE}    slcand: -{BITRATE_SLCAND_CODE} (500 kbit/s)",
@@ -422,13 +454,17 @@ class App:
         self.setup_btn = LeafButton(self.canvas, col_cx, 106, length=190, width=72, stem_len=14,
                                      text="Set Up CAN", command=self.on_setup,
                                      angle_deg=90, font=BUTTON_FONT)
-        self.disable_btn = LeafButton(self.canvas, col_cx, 208, length=190, width=72, stem_len=14,
+        self.enable_btn = LeafButton(self.canvas, col_cx, 174, length=190, width=72, stem_len=14,
+                                      text="Enable Motor", command=self.on_enable,
+                                      angle_deg=90, font=BUTTON_FONT)
+        self.disable_btn = LeafButton(self.canvas, col_cx, 242, length=190, width=72, stem_len=14,
                                        text="Disable Motor", command=self.on_disable,
                                        angle_deg=90, font=BUTTON_FONT)
         self.shutdown_btn = LeafButton(self.canvas, col_cx, 310, length=190, width=72, stem_len=14,
                                         text="Shut Down CAN", command=self.on_shutdown,
                                         angle_deg=90, font=BUTTON_FONT)
-        self.action_buttons = [self.setup_btn, self.disable_btn, self.shutdown_btn]
+        self.action_buttons = [self.setup_btn, self.enable_btn,
+                               self.disable_btn, self.shutdown_btn]
 
         self.attribution_id = self.canvas.create_text(
             CANVAS_WIDTH - 12, CANVAS_HEIGHT - 12, anchor="se",
@@ -488,10 +524,15 @@ class App:
             else:
                 self.canvas.itemconfigure(self._bg_image_id, image=self._bg_photo)
 
+        # Spread the column between the header and the photo attribution
+        # instead of using fixed y's -- with four buttons the old fixed
+        # spacing ran off the bottom of the shorter window sizes.
         col_cx = side_x1 / 2
-        self.setup_btn.reposition(col_cx, 106)
-        self.disable_btn.reposition(col_cx, 208)
-        self.shutdown_btn.reposition(col_cx, 310)
+        col_top, col_bottom = 106, max(180, h - 76)
+        n = len(self.action_buttons)
+        step = min(BUTTON_MAX_SPACING, (col_bottom - col_top) / (n - 1))
+        for i, btn in enumerate(self.action_buttons):
+            btn.reposition(col_cx, col_top + i * step)
 
         self.support_btn.reposition(w - 70, 32)
         self.canvas.coords(self.attribution_id, side_x1 - 12, h - 12)
@@ -568,6 +609,9 @@ class App:
 
     def on_setup(self):
         self.run_in_background(setup_can, "Setting up CAN (a password prompt may appear)...")
+
+    def on_enable(self):
+        self.run_in_background(enable_motor, "Enabling motor...")
 
     def on_disable(self):
         self.run_in_background(disable_motor, "Disabling motor...")
