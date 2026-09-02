@@ -251,9 +251,13 @@ Shaft protection & still \texttt{00} \\
 Once accepted, keep within these when using the joint:
 
 \begin{itemize}[leftmargin=*]
-    \item \textbf{Speed at or below 225} (motor rpm). Above $\approx$250 the motor
-          receives more pulses than it executes and silently loses position. It
-          saturates near 310~rpm.
+    \item \textbf{Speed at or below 225} (motor rpm) --- \emph{for a bare motor}.
+          Above $\approx$250 an unloaded motor receives more pulses than it
+          executes and silently loses position; it saturates near 310~rpm. These
+          are no-load figures and a geared joint saturates well below them: Joint
+          B, through 67.82:1, tracks only to 150~rpm and plateaus near 165, though
+          it did not lose position when over-commanded. Measure the joint rather
+          than inheriting this number.
     \item \textbf{Use \texttt{0xFD} for all motion.} Do not use \texttt{0xF5}.
     \item \textbf{Never retry into a stall.} Back off and re-attempt, or stop.
     \item \textbf{Disable coils between tests} so the motor is not needlessly

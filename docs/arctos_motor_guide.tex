@@ -450,6 +450,35 @@ There is no hard stall --- speed rolls off gracefully and plateaus. \textbf{But
 above roughly 250 the motor receives more pulses than it executes, so position is
 silently lost.} For anything where position matters, stay at or below 225.
 
+\subsection{Measured ceilings, per joint}
+The table above is a bare motor on a bench. A joint drags its gearbox with it and
+the ceiling falls accordingly, so treat the no-load numbers as an upper bound
+rather than a specification, and measure each joint with
+\texttt{joint\_speed\_limit\_test.py} instead of inheriting them.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lllll}
+\toprule
+\textbf{Joint} & \textbf{Driver} & \textbf{Gear} & \textbf{Linear to} & \textbf{Saturates} \\ \midrule
+--- (bench, no load) & Servo42D & none      & 225~rpm & $\approx$310~rpm \\
+B                    & Servo42D & 67.82:1   & 150~rpm & $\approx$165~rpm \\
+\bottomrule
+\end{tabular}
+\caption{Joint B measured 2026-09-02 over a 48\textdegree{} arc at \texttt{accel=8}.
+Commanded 150 tracked at 99.7\%; commanded 165, 175, 200, 225 and 300 all produced
+159--165~rpm. Past saturation, extra commanded speed buys nothing but current.}
+\end{table}
+
+\begin{caution}{Over-commanding speed did not lose position on a geared joint}
+\texttt{0xFD} commands a pulse \emph{count}, not a duration. On Joint B every trial
+from 150 through 300 commanded delivered its 48\textdegree{} arc to $+0.01\%$: past
+saturation the move simply takes longer, it does not drop pulses. Silent position
+loss requires actual slip. So do not carry the no-load ``loses steps above 250''
+result across to a geared joint automatically --- verify which behaviour the joint
+in front of you actually shows before relying on either.
+\end{caution}
+
 \section{Converting Encoder Counts to Joint Degrees}
 
 \[

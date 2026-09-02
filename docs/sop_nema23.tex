@@ -253,9 +253,12 @@ python3 src/arctos_can_control/arctos_can_control/joint_unstick_move_test.py \
 \passif{Every step 99--101\% with \texttt{FD 02}; round trip returns to start.}
 
 \section*{Step 9 --- Establish this motor's speed limit \unverified}
-\textbf{The NEMA 17 figures do not transfer.} A NEMA 23 has different winding
-inductance and a different torque-speed curve, so its usable speed ceiling must be
-measured, not assumed.
+\textbf{The NEMA 17 figures do not transfer.} The NEMA 23 joints run a Servo57D,
+where the NEMA 17 joints run a Servo42D --- different winding inductance and a
+different torque-speed curve, so this motor's usable speed ceiling must be
+measured, not assumed. The measured per-joint table in
+\texttt{arctos\_motor\_guide.tex} is for Servo42D joints; do not read Joint B's
+numbers across to a 57D.
 
 With the joint unloaded and clear, run short trials at increasing \texttt{speed} and
 record actual rpm against commanded. The usable limit is the highest speed where
