@@ -1,0 +1,677 @@
+\documentclass[11pt,letterpaper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{backcolour}{rgb}{0.96,0.96,0.94}
+\definecolor{cautionred}{rgb}{0.55,0,0}
+
+% Listings are configured so that anything inside one can be selected from the
+% PDF and pasted straight into a terminal:
+%   numbers=none        no line numbers to catch in the selection
+%   columns=fullflexible no padding spaces inserted between characters
+%   upquote=true        straight quotes, not typographic ones
+%   breaklines=false    a wrapped line would paste with a spurious newline,
+%                       so every line below is kept short enough to fit
+\lstset{
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{backcolour},
+    numbers=none,
+    frame=single,
+    framesep=5pt,
+    columns=fullflexible,
+    keepspaces=true,
+    upquote=true,
+    showstringspaces=false,
+    breaklines=false,
+    xleftmargin=0pt,
+    aboveskip=8pt,
+    belowskip=8pt
+}
+
+\newenvironment{caution}[1]{%
+    \par\addvspace{8pt}%
+    \noindent{\color{cautionred}\rule{\linewidth}{0.8pt}}\par\vspace{2pt}
+    \noindent\textbf{\color{cautionred}Caution: #1}\par\vspace{2pt}
+}{%
+    \par\vspace{2pt}\noindent{\color{cautionred}\rule{\linewidth}{0.4pt}}%
+    \par\addvspace{8pt}%
+}
+
+\title{Arctos CAN Interface \\ \large How the arm's motors and CAN bus actually work}
+\author{Consolidated from project debugging logs, source inspection and bench testing}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\section{About these documents}
+
+This is the reference document: how the bus works, how the protocol is framed, how
+to turn encoder counts into joint angles, and what has actually been verified
+against hardware rather than assumed. It is deliberately not a step-by-step
+procedure.
+
+There are four documents in this set and they do not overlap:
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Arctos\_CAN\_Interface} --- this one. Background and reference.
+    \item \textbf{Nema\_17\_MKS42D\_SOP} --- bringing up a NEMA 17 joint on an MKS
+          SERVO42D. Joints A, B and C.
+    \item \textbf{Nema\_23\_MKS57D\_SOP} --- bringing up a NEMA 23 joint on an MKS
+          SERVO57D. Joint X. Largely unverified; see that document's opening.
+    \item \textbf{BASIC\_CAN\_COMMANDS} --- terminal commands only. Setting the
+          interface up, talking to a motor, shutting down to unplug.
+\end{itemize}
+
+This set replaces \texttt{arctos\_motor\_guide}, \texttt{sop\_nema17},
+\texttt{sop\_nema23}, \texttt{arctos\_CAN\_ROS2\_SOP\_updated} and
+\texttt{arctos\_motor\_can\_cheat\_sheet\_updated}. Section~\ref{sec:corrections}
+lists the things that were \emph{wrong} in those files, so nothing is silently
+re-derived from a stale copy.
+
+\section{Core concepts}
+
+\subsection{CAN bus, in one paragraph}
+CAN is a differential two-wire multi-drop bus. Every device shares the same pair,
+CAN\_H and CAN\_L, plus a common ground, and each device is addressed by an ID.
+Every node must agree on the bitrate; this arm runs at \textbf{500 kbit/s}. Because
+all nodes share one pair, two devices configured with the same CAN ID will collide
+and neither will behave correctly.
+
+\subsection{Gearboxes and closed-loop steppers, in one paragraph}
+Each joint is a stepper motor driving a reduction gearbox. The reduction multiplies
+torque and divides both speed and angular error: through a 67.82:1 gearbox, one
+motor revolution is only about 5.31\textdegree{} at the joint. The MKS controllers
+are closed-loop --- a magnetic encoder on the motor shaft reports true position, so
+the controller can tell that it has fallen behind. Two consequences matter
+constantly in practice. The encoder measures the \textbf{motor shaft, not the joint
+output}. And a stalled stepper converts its full phase current into heat, with no
+motion to carry it away.
+
+\section{Hardware}
+
+\subsection{Joint, motor and CAN ID map}
+
+\begin{center}
+\begin{tabular}{lllll}
+\toprule
+\textbf{Joint} & \textbf{Role} & \textbf{CAN ID} & \textbf{Motor / driver} & \textbf{Gear ratio} \\ \midrule
+X & Base and waist rotation & \texttt{0x01} & NEMA 23 / SERVO57D & 13.5:1  \\
+Y & not confirmed           & \texttt{0x02} & ---                & 150.0:1 \\
+Z & not confirmed           & \texttt{0x03} & ---                & 150.0:1 \\
+A & Elbow                   & \texttt{0x04} & NEMA 17 / SERVO42D & 48.0:1  \\
+C & Wrist joint             & \texttt{0x05} & NEMA 17 / SERVO42D & 67.82:1 \\
+B & Wrist rotation          & \texttt{0x06} & NEMA 17 / SERVO42D & 67.82:1 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{caution}{Joints B and C are documented backwards in several older files}
+Joint B is \texttt{0x06}. Joint C is \texttt{0x05}. Files that state the opposite
+include \texttt{joint\_b\_final\_reliability\_test.py}, the legacy
+\texttt{joint\_b\_micro\_move\_text\_v2.py}, and the old cheat sheet, all of which
+hard-code Joint B as \texttt{0x05}. A scan on 2026-09-02 with only Joint B connected
+returned a single responder at \texttt{0x06}. Joint A's \texttt{0x04} and its 48:1
+ratio are empirically verified; the rest are config values.
+\end{caution}
+
+\begin{caution}{Always confirm a CAN ID against real hardware}
+Run the read-only scan before trusting any table, including the one above. It sends
+only the \texttt{0x31} query and never enables coils:
+\begin{lstlisting}
+cd ~/arctos_ws/src/arctos_can_control/arctos_can_control
+python3 can_id_scan.py --channel can0 --ids 1-16
+\end{lstlisting}
+\end{caution}
+
+\subsection{Motor specifications}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Parameter} & \textbf{NEMA 17 / SERVO42D} & \textbf{NEMA 23 / SERVO57D} \\ \midrule
+Holding torque & 24~N\textperiodcentered cm & 1.8~N\textperiodcentered m \\
+Rated current  & 1.2~A & 2.8~A \\
+Shaft diameter & 5~mm  & 6.35~mm \\
+Step angle     & 1.8\textdegree{}, 200 full steps per rev & 1.8\textdegree{}, 200 full steps per rev \\
+Microstepping  & 16 times, 3200 pulses per rev & 16 times, 3200 pulses per rev \\
+Encoder        & 16384 counts per rev, 14-bit & 16384 counts per rev, 14-bit \\
+Joints         & A, B, C & X \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{caution}{Do not confuse motor steps, microstep pulses and encoder counts}
+Three different resolutions are in play, and mixing them is the single most common
+arithmetic error in this project.
+\begin{itemize}[leftmargin=*]
+    \item \textbf{200} full steps per motor revolution, the physical stepping
+          resolution.
+    \item \textbf{3200} microstep pulses per motor revolution, the scale that
+          \texttt{0xFD} position commands are expressed in.
+    \item \textbf{16384} encoder counts per motor revolution, the scale that
+          \texttt{0x31} reports in.
+\end{itemize}
+One microstep pulse is $16384/3200 = 5.12$ encoder counts. Commanded motion and
+measured motion are therefore never in the same units.
+\end{caution}
+
+\subsection{CANable 2 adapter and wiring}
+
+\begin{itemize}[leftmargin=*]
+    \item USB VID:PID \texttt{16d0:117e}.
+    \item It contains its own CAN controller. Do \textbf{not} add an external MCP2515
+          module in series with it.
+    \item Only three wires are needed between adapter and controller: CAN\_H, CAN\_L
+          and GND. Do \emph{not} connect the CANable's power lines to the motor
+          controller.
+\end{itemize}
+
+\begin{lstlisting}
+Ubuntu host -> USB -> CANable 2 -> CAN_H / CAN_L / GND
+            -> MKS controller (SERVO42D or SERVO57D) -> joint motor
+\end{lstlisting}
+
+\subsection{Bus termination check, power off}
+
+With everything powered off, measure resistance between CAN\_H and CAN\_L.
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Reading} & \textbf{Meaning} \\ \midrule
+About 60~$\Omega$  & Correct. Two 120~$\Omega$ terminators in parallel \\
+About 120~$\Omega$ & Only one terminator present \\
+Open circuit       & Wiring is disconnected \\
+Very low           & Possible short \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{The CAN interface on Ubuntu}
+\label{sec:can-interface}
+
+The CANable presents as a serial device, and \texttt{slcand} bridges it to a Linux
+network interface. This has to be rebuilt every time the adapter is plugged in or
+re-enumerates. The commands themselves are in \texttt{BASIC\_CAN\_COMMANDS}; what
+follows is why they are what they are.
+
+\begin{caution}{The \texttt{slcand} bitrate flag is a coded index, not a number}
+\texttt{-s0} is 10k, \texttt{-s1} 20k, \texttt{-s2} 50k, \texttt{-s3} 100k,
+\texttt{-s4} 125k, \texttt{-s5} 250k, \textbf{\texttt{-s6} 500k}, \texttt{-s7} 800k,
+\texttt{-s8} 1M. This arm is 500 kbit/s, so \texttt{-s6} is correct. Earlier scripts
+in this project used \texttt{-s3} and silently attached at 100 kbit/s, which
+presents as a completely dead bus.
+\end{caution}
+
+\begin{caution}{On slcan the bitrate is set at attach time and \texttt{ip} cannot show it}
+Do not use \texttt{ip link set can0 up type can bitrate 500000}. That netlink
+attribute is for native CAN controller drivers and is not supported on slcan. As a
+result \texttt{ip -details link show can0} reports \texttt{bitrate 0} and
+\texttt{clock 0} on a perfectly healthy CANable. This is normal and is not a fault
+to chase. An older version of this documentation told the reader to verify by
+looking for \texttt{bitrate 500000}; that check can never pass on this hardware.
+\end{caution}
+
+\begin{caution}{Kernel CAN error counters are meaningless on slcan}
+The re-started, bus-errors, arbit-lost, error-warn, error-pass and bus-off counters
+in \texttt{ip -details -statistics link show can0} are not populated by the slcan
+driver. They read zero regardless of what the bus is doing. Do not use them as
+evidence that a bus is healthy, and note that the ``total silence with zero bus
+errors implies no CAN transceiver'' heuristic in Section~\ref{sec:rs485} needs a
+native CAN controller to mean anything.
+\end{caution}
+
+\section{Controller panel configuration}
+\label{sec:panel}
+
+Confirm these on the controller's own display before attempting CAN communication.
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Setting} & \textbf{Value} \\ \midrule
+CAN ID   & the joint's ID from the map above \\
+CAN Rate & \texttt{500} \\
+CAN Response, shown as CANRSP & \texttt{ENABLE} \\
+CAN CRC  & \texttt{SUM-8} \\
+Working current & at or below the motor's rated current \\
+Working mode & see the caution below \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Save and power-cycle the controller after any change. The CAN ID in particular must
+be committed, not merely displayed.
+
+\begin{caution}{Set the working current to the motor's rating, not the panel default}
+A controller in this project was found storing a 3000~mA default against a motor
+rated 1.2~A, roughly two and a half times over. Check this on every new controller.
+\end{caution}
+
+\begin{caution}{A working-mode mismatch can imitate a communication fault}
+The ROS 2 driver defines six modes and defaults to \texttt{CR\_vFOC}, which is 2:
+\begin{lstlisting}
+CR_OPEN = 0, CR_CLOSE = 1, CR_vFOC = 2,
+SR_OPEN = 3, SR_CLOSE = 4, SR_vFOC = 5
+\end{lstlisting}
+If the panel's mode disagrees with what a motion command assumes, the controller can
+accept a frame and acknowledge its checksum without rotating the shaft. Confirm the
+mode before concluding that a ``no motion'' result is a wiring or CAN problem.
+\end{caution}
+
+\section{The MKS CAN protocol}
+
+\subsection{Frame structure and checksum}
+
+Every frame is \texttt{[command byte][data bytes][checksum byte]}, where the checksum
+is an 8-bit sum that \textbf{includes the CAN ID}:
+
+\begin{lstlisting}
+def checksum(motor_id, data_bytes):
+    return (motor_id + sum(data_bytes)) & 0xFF
+\end{lstlisting}
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Frame, no checksum} & \textbf{CAN ID} & \textbf{Arithmetic} & \textbf{Checksum} \\ \midrule
+\texttt{31}    & \texttt{0x04} & \texttt{0x31+0x04}       & \texttt{35} \\
+\texttt{31}    & \texttt{0x06} & \texttt{0x31+0x06}       & \texttt{37} \\
+\texttt{3A}    & \texttt{0x05} & \texttt{0x3A+0x05}       & \texttt{3F} \\
+\texttt{F3 01} & \texttt{0x05} & \texttt{0xF3+0x01+0x05}  & \texttt{F9} \\
+\texttt{F7}    & \texttt{0x06} & \texttt{0xF7+0x06}       & \texttt{FD} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The checksum differs per joint, so a frame copied from another joint's documentation
+is silently rejected. \texttt{BASIC\_CAN\_COMMANDS} has a ready-made table for every
+ID on this arm.
+
+\begin{caution}{Never hand-invent a checksum, and never reuse another joint's frame}
+Omitted or incorrect checksum bytes were the direct cause of several ``the motor
+ignored my command'' failures in this project. Compute it from the formula every
+time, including for the emergency stop.
+\end{caution}
+
+\subsection{Command reference}
+
+\begin{longtable}{lll}
+\toprule
+\textbf{Name} & \textbf{Byte} & \textbf{Status} \\ \midrule
+\endhead
+\texttt{QUERY\_MOTOR}       & \texttt{0xF1} & Liveness check. Answers \texttt{F1 01}. \\
+\texttt{READ\_ENCODER}      & \texttt{0x31} & \textbf{Verified. Use this one.} \\
+\texttt{READ\_ENCODER} carry form & \texttt{0x30} & Superseded. See Section~\ref{sec:corrections}. \\
+\texttt{READ\_VELOCITY}     & \texttt{0x32} & Responds; zero at rest. Layout unconfirmed. \\
+\texttt{READ\_ERROR}        & \texttt{0x39} & Signed 32-bit deficit. Grows when stalled. \\
+\texttt{READ\_ENABLE\_STATE} & \texttt{0x3A} & \texttt{01} enabled, \texttt{00} disabled. Verified. \\
+\texttt{READ\_SHAFT\_PROTECTION} & \texttt{0x3E} & \texttt{00} clear. Non-zero latches the driver. \\
+\texttt{SET\_WORKING\_MODE} & \texttt{0x82} & See the panel caution. \\
+\texttt{ENABLE\_SHAFT\_PROTECTION} & \texttt{0x88} & \textbf{Avoid.} False positives, and it latches. \\
+\texttt{ENABLE\_MOTOR}      & \texttt{0xF3} & \texttt{01} enable, \texttt{00} disable. Verified. \\
+\texttt{RELATIVE\_POSITION} & \texttt{0xF4} & Unsafe packing. See the motion section. \\
+\texttt{ABSOLUTE\_POSITION} & \texttt{0xF5} & \textbf{Unsafe.} See the motion section. \\
+\texttt{SPEED\_CONTROL}     & \texttt{0xF6} & Not exercised. \\
+\texttt{EMERGENCY\_STOP}    & \texttt{0xF7} & Verified, with checksum. \\
+\texttt{POSITION\_CONTROL}  & \texttt{0xFD} & \textbf{Verified. Preferred for all motion.} \\
+\bottomrule
+\end{longtable}
+
+\subsection{Reading the encoder}
+\label{sec:encoder}
+
+Use \texttt{0x31}. The response is \texttt{[0x31][6 bytes signed position][checksum]},
+where the six bytes are a big-endian signed 48-bit multi-turn count on the
+16384-counts-per-revolution scale:
+
+\begin{lstlisting}
+raw48 = int.from_bytes(data[1:7], byteorder="big", signed=True)
+motor_degrees = raw48 * 360.0 / 16384
+joint_degrees = motor_degrees / gear_ratio
+\end{lstlisting}
+
+This is multi-turn and does not wrap at one revolution. It resets to approximately
+zero when the controller is power-cycled, so it is a relative reference from
+power-on, not an absolute machine coordinate.
+
+\begin{caution}{The encoder measures the motor shaft, not the joint output}
+Gearbox backlash and any lost motion downstream of the motor are invisible to this
+encoder. It cannot measure output-side backlash; that needs a dial indicator on the
+output.
+\end{caution}
+
+\subsection{Encoder non-linearity}
+
+The magnetic encoder carries a once-per-revolution sinusoidal error caused by the
+sensing magnet sitting slightly off-centre on the shaft. Measured on Joint A over
+6725 samples: \textbf{1.465\textdegree{} peak to peak at the motor shaft}, about
+0.407\% of a revolution.
+
+Two practical consequences:
+
+\begin{itemize}[leftmargin=*]
+    \item It cancels over any whole number of motor revolutions. Choosing a step size
+          that is an integer number of motor turns makes it vanish --- Joint A steps
+          of exactly 6 motor revolutions landed at 100.0\% every time, where
+          90\textdegree{} motor-shaft steps scattered between 98.7 and 101.4\%.
+    \item Through a reduction it becomes negligible at the joint: 1.465\textdegree{}
+          through 48:1 is 0.031\textdegree{}.
+\end{itemize}
+
+Repeatability is unaffected. Returning to the same shaft angle repeats to better
+than one encoder count. Absolute readings carry the cyclic error; relative and
+repeat positioning do not.
+
+\section{Motion commands}
+\label{sec:motion}
+
+\textbf{Use \texttt{POSITION\_CONTROL}, \texttt{0xFD}.} It is what the project's own
+working jog code uses and the only motion command verified safe here.
+
+\begin{lstlisting}
+[0xFD]
+[direction | ((speed >> 8) & 0x0F)]   direction 0x00 fwd, 0x80 reverse
+[speed & 0xFF]                        speed is approximately motor rpm
+[accel]
+[(pulses >> 16) & 0xFF]               ALWAYS-POSITIVE magnitude, on the
+[(pulses >>  8) & 0xFF]               3200-pulses-per-motor-rev scale
+[pulses & 0xFF]
+[checksum]
+\end{lstlisting}
+
+\[
+\text{pulses} = |\text{joint degrees}| \times \frac{3200 \times \text{gear ratio}}{360}
+\]
+
+The driver replies with an unsolicited two-frame status sequence: \texttt{FD 01} for
+``started'', then \texttt{FD 02} for ``complete'' if the commanded distance was
+actually achieved. \textbf{The absence of \texttt{FD 02} is the reliable signal that
+a command did not finish.}
+
+\begin{caution}{Do not use \texttt{0xF5}, and be careful with \texttt{0xF4}}
+\texttt{0xF5} packs an absolute target through a plain \texttt{\& 0xFFFFFF}. On a
+joint whose raw counter had drifted to roughly $-274000$ counts, a small intended
+nudge became an enormous, non-settling, uninterruptible move that required cutting
+motor power. \texttt{0xF4} packs a possibly-negative delta the same way. The
+\texttt{0xFD} pattern above, a separate direction byte plus an always-positive
+magnitude, does not have this failure mode.
+\end{caution}
+
+\begin{caution}{Never retry a stalled command into an obstruction}
+Re-sending the same command to a joint that has not moved changes nothing except the
+motor's temperature. Nine consecutive full-torque retries into a hard stop drove one
+joint's internal position error to $-124374$ counts and cost a cooldown to recover
+from. If a step under-delivers, stop, or back off and re-attempt once.
+\end{caution}
+
+\begin{caution}{A repeatable stop angle is mechanical, not roughness}
+Rough gear mesh varies. If a joint stops at the \emph{same} angle to the encoder
+count on attempt after attempt, and the back-off also delivers nothing, that is a
+hard mechanical limit. On Joint B this pattern turned out to be a gear seated in the
+wrong position; once corrected the joint swept the same range with zero unstick
+cycles. Open the gearbox rather than working at it.
+\end{caution}
+
+\section{Speed and its limits}
+
+The \texttt{speed} field is very close to motor rpm. Measured on a bare NEMA 17 with
+no load:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Commanded} & \textbf{Actual} & \textbf{Behaviour} \\ \midrule
+10--225  & tracks to within 0.5\%      & linear \\
+250      & 98.7\%                      & edge of linear \\
+275--325 & 96.5\% down to 90\%         & rolling off \\
+350 plus & saturates near 310 rpm      & losing steps \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Measured ceilings, per joint}
+
+That table is a bare motor on a bench. A joint drags its gearbox with it and the
+ceiling falls accordingly, so treat the no-load numbers as an upper bound and
+measure each joint.
+
+\begin{center}
+\begin{tabular}{lllll}
+\toprule
+\textbf{Joint} & \textbf{Driver} & \textbf{Gear} & \textbf{Linear to} & \textbf{Saturates} \\ \midrule
+bench, no load & SERVO42D & none    & 225 rpm & about 310 rpm \\
+B              & SERVO42D & 67.82:1 & 150 rpm & about 165 rpm \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Joint B was measured on 2026-09-02 over a 48\textdegree{} arc. Commanded 150 tracked
+at 99.7\%; commanded 165, 175, 200, 225 and 300 all produced 159 to 165 rpm. Past
+saturation, extra commanded speed buys nothing but current and heat. The measurement
+was repeated at eight times the acceleration to confirm the ramp was not the limiter,
+which moved the result by only about 4\%.
+
+\begin{caution}{Over-commanding speed did not lose position on a geared joint}
+\texttt{0xFD} commands a pulse \emph{count}, not a duration. On Joint B every trial
+from 150 through 300 commanded delivered its 48\textdegree{} arc to $+0.01\%$: past
+saturation the move simply takes longer, it does not drop pulses. Silent position
+loss requires actual slip. Do not carry the no-load ``loses steps above 250'' result
+across to a geared joint automatically --- verify which behaviour the joint in front
+of you shows.
+\end{caution}
+
+\begin{caution}{Heat is the real limit on any speed or reliability testing}
+A ladder of trials run back to back overheats the motor even when no single trial is
+aggressive. Eleven trials with one-second gaps was enough to have to stop and let a
+joint cool; fifteen seconds between trials was not. There is no temperature-read
+opcode on these drivers, so software cannot detect this. Budget total energized time,
+not just peak current, and stop as soon as you have the answer.
+\end{caution}
+
+\section{Converting encoder counts to joint degrees}
+
+\[
+\text{counts per joint degree} = \frac{\text{gear ratio} \times 16384}{360}
+\]
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Gear ratio} & \textbf{Counts per joint degree} & \textbf{Joints} \\ \midrule
+13.5:1  & 614.4   & X \\
+48.0:1  & 2184.5  & A \\
+67.82:1 & 3086.56 & B, C \\
+150.0:1 & 6826.7  & Y, Z \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{caution}{Three wrong conversion constants exist in this project's history}
+Do not use any of them.
+\begin{enumerate}[leftmargin=*]
+    \item ``About 3300 counts per 90\textdegree'' describes the \emph{motor shaft},
+          not the joint. Through 67.82:1 that same motion is only about
+          1.07\textdegree{} of joint travel.
+    \item \texttt{COUNTS\_PER\_REV = 16050}. The encoder is 14-bit, so 16384 is
+          correct and source-verified.
+    \item \texttt{pulses\_per\_degree = -813.0} in \texttt{mks\_driver.py}, off by
+          roughly 3.8 times, with an accompanying ``safety cage'' that estimated
+          limits using a different multiplier than the one actually transmitted, so
+          it could not reliably block an unsafe command.
+\end{enumerate}
+Use only the formula above.
+\end{caution}
+
+\section{Safety}
+\label{sec:safety}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Action} & \textbf{Frame} & \textbf{Example, Joint A at \texttt{0x04}} \\ \midrule
+Enable coils   & \texttt{F3 01 crc} & \texttt{cansend can0 004\#F301F8} \\
+Disable coils  & \texttt{F3 00 crc} & \texttt{cansend can0 004\#F300F7} \\
+Emergency stop & \texttt{F7 crc}    & \texttt{cansend can0 004\#F7FB} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Recompute for the joint you are actually driving, or take the row from
+\texttt{BASIC\_CAN\_COMMANDS}.
+
+\begin{caution}{Compute your joint's e-stop frame before you need it}
+A previous version of this documentation gave a joint's emergency stop as
+\texttt{cansend can0 001\#F7F8}, addressed to CAN ID \texttt{0x01}, when the motor
+was not on that ID. It would have done nothing. Derive the frame for the joint in
+front of you, and keep it pasted in a second terminal before commanding motion.
+\end{caution}
+
+\begin{caution}{Dropping coils on a gravity-loaded joint lets it fall}
+Several scripts in this package disable the motor in a \texttt{finally} block. On an
+unloaded bench motor that is harmless; on an assembled arm it removes holding
+torque. Know which you have before running one.
+\end{caution}
+
+\section{Troubleshooting}
+\label{sec:troubleshooting}
+
+\begin{longtable}{p{0.34\textwidth}p{0.58\textwidth}}
+\toprule
+\textbf{Symptom} & \textbf{Likely cause and fix} \\ \midrule
+\endhead
+\texttt{can0} does not exist &
+  \texttt{slcand} died, usually because the adapter re-enumerated. Re-run the
+  bring-up. Check \texttt{/dev/serial/by-id/} for the current device name. \\
+Adapter present, \texttt{can0} missing after a replug &
+  Expected. \texttt{slcand} does not restart itself. A udev rule keyed on the
+  adapter's serial can automate this. \\
+\texttt{ip} shows \texttt{bitrate 0} &
+  Normal on slcan. Not a fault. \\
+No response from any ID &
+  Check panel CAN ID, CAN rate and CANRSP; check CAN\_H, CAN\_L and termination;
+  confirm the driver is powered. If still silent see Section~\ref{sec:rs485}. \\
+Command acknowledged, motor does not move &
+  Distinguish ``not being driven'' from ``driven but cannot move the load'' --- the
+  bus cannot tell these apart. Disable coils and turn the joint by hand. \\
+Motion for a few degrees, then nothing in either direction &
+  If it cannot even back off, suspect a bind stiff enough to absorb full torque, a
+  marginal motor phase connection, or a misassembled gear. Reseating a connector
+  once took a joint's travel budget from 1.05\textdegree{} to 3.85\textdegree{}. \\
+Stops at the same angle every attempt &
+  Mechanical, not roughness. Open the gearbox. A gear in the wrong position produced
+  exactly this on Joint B. \\
+Gritty resistance by hand, stalls under power &
+  Gear mesh needs lubrication. Use a plastic-safe PTFE or silicone grease.
+  Petroleum jelly works as a diagnostic but migrates once warm. \\
+Motor warm but not hot &
+  Normal. Thermal shutdown makes a motor too hot to touch; warm is a stepper doing
+  its job. \\
+Driver stops responding mid-test &
+  Check power and connectors first. This has been an accidental unplug more than
+  once. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Total silence with a powered driver: the RS485 variant}
+\label{sec:rs485}
+
+The MKS SERVO42D and SERVO57D ship in both CAN and RS485 variants. The RS485 boards
+have \textbf{no CAN transceiver at all} and will never appear on the bus at any
+bitrate or address. Joint X's driver turned out to be the RS485 variant, which is why
+it has never communicated. If a joint is silent across a full ID scan and a bitrate
+sweep, with power and wiring confirmed, \textbf{check the board's part number before
+spending any more time in software}.
+
+\section{The scripts in this package}
+
+All of these live in \texttt{\textasciitilde/arctos\_ws/src/arctos\_can\_control/arctos\_can\_control}.
+Each takes \texttt{--can-id} and \texttt{--gear-ratio}; the motion ones also take an
+explicit safety band.
+
+\begin{longtable}{p{0.33\textwidth}p{0.59\textwidth}}
+\toprule
+\textbf{Script} & \textbf{What it does} \\ \midrule
+\endhead
+\texttt{can\_id\_scan.py} &
+  Read-only sweep of CAN IDs using \texttt{0x31}. Never enables coils. Run this
+  before trusting any ID. \\
+\texttt{joint\_reliability\_test.py} &
+  Statistical encoder sampling at rest. Response rate, checksum failures, jitter,
+  drift. \\
+\texttt{joint\_unstick\_move\_test.py} &
+  Stepped \texttt{0xFD} travel in one direction with a back-off-and-retry cycle for
+  a gritty mesh. \\
+\texttt{joint\_sweep\_unstick\_test.py} &
+  Sweeps back and forth between two bounds for a fixed wall-clock duration, with the
+  same unstick cycle and a total stall budget as a heat guard. Use when a rough spot
+  needs crossing repeatedly. \\
+\texttt{joint\_speed\_limit\_test.py} &
+  Ladder of commanded speeds across a fixed arc. Reports steady rpm, a whole-move
+  average as a cross-check, and delivered position against commanded. \\
+\texttt{joint\_position\_control\_test.py} &
+  Stepped position moves with retry. Superseded by the unstick variants for a
+  suspect mesh. \\
+\bottomrule
+\end{longtable}
+
+\section{ROS 2 package layout}
+
+The workspace is a standard ROS 2 layout. The CAN work lives in
+\texttt{src/arctos\_can\_control}; \texttt{src/ros2\_arctos} carries the description,
+MoveIt configuration and hardware interface.
+
+\begin{lstlisting}
+cd ~/arctos_ws
+colcon build --packages-select arctos_can_control
+source install/setup.bash
+\end{lstlisting}
+
+The Python test scripts above do not need the workspace built or sourced. They talk
+to SocketCAN directly and can be run from the source directory, which is why every
+procedure in the SOPs uses them rather than ROS 2 nodes.
+
+\section{Corrections, and what this set replaces}
+\label{sec:corrections}
+
+These four documents replace five older ones. The following items were
+\textbf{wrong} in those files and were corrected here, so do not re-derive them from
+any surviving copy.
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Joint B and C CAN IDs.} Older files hard-code Joint B as
+          \texttt{0x05}. Joint B is \texttt{0x06} and Joint C is \texttt{0x05},
+          confirmed by scan.
+    \item \textbf{Encoder opcode.} An old guide standardized on \texttt{0x30} and
+          described \texttt{0x31} as unverified. That is backwards. \texttt{0x31} is
+          what the real C++ driver uses and what every script here uses.
+    \item \textbf{Bitrate verification.} An old guide instructed the reader to run
+          \texttt{ip link set can0 up type can bitrate 500000} and then verify by
+          looking for \texttt{bitrate 500000}. Neither works on slcan.
+    \item \textbf{Bus error counters.} Old troubleshooting advice leaned on bus-error
+          counts that the slcan driver never populates.
+    \item \textbf{Motion command.} An old safe-first-motion procedure was built on
+          \texttt{0xF5}, whose absolute-versus-relative behaviour it correctly
+          flagged as unresolved. That question is moot: use \texttt{0xFD}.
+    \item \textbf{Missing checksums.} The old cheat sheet listed
+          \texttt{cansend can0 005\#F300} and \texttt{cansend can0 005\#F7} with no
+          checksum byte at all. Both would be rejected. The correct frames are
+          \texttt{005\#F300F8} and \texttt{005\#F7FC}.
+    \item \textbf{Speed ceiling.} The no-load figure of 225 rpm was presented as a
+          general operating limit. It is a bare-motor number; Joint B saturates at
+          about 165.
+\end{itemize}
+
+\end{document}

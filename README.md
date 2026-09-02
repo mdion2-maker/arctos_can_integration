@@ -29,15 +29,21 @@ sessions. Read it before the code; the scripts assume the context it provides.
 ```
 ros2_package/arctos_can_control/   ROS 2 (ament_python) package: the diagnostic
                                     scripts, the ROS node, and the SOP itself.
-docs/                               Reference documents assembled across sessions
-                                    (an earlier/superseded Joint B guide and cheat
-                                    sheet are kept for historical comparison — see
-                                    the SOP's own "Protocol Errata" section for
-                                    which claims in them turned out to be wrong).
-gui/                                A small Tkinter desktop app with two buttons:
-                                    bind the CANable to can0, and safely disable
-                                    the motor + tear the interface down before
-                                    unplugging it.
+docs/                               Four documents, and only four:
+                                      Arctos_CAN_Interface  — how the bus and the
+                                        protocol work. Read this first.
+                                      Nema_17_MKS42D_SOP    — bring up a NEMA 17
+                                        joint (A, B, C).
+                                      Nema_23_MKS57D_SOP    — bring up a NEMA 23
+                                        joint (X). Largely unverified.
+                                      BASIC_CAN_COMMANDS    — terminal commands to
+                                        set up, talk to, and tear down the bus.
+                                    Each ships as .tex and .pdf. Code blocks carry
+                                    no line numbers, so anything in them can be
+                                    pasted straight into a terminal.
+gui/                                A small Tkinter desktop app: bind the CANable
+                                    to can0, enable or disable the motor, and tear
+                                    the interface down before unplugging it.
 firmware/                           CANable adapter firmware images (slcan and
                                     candlelight/gs_usb variants) kept for reference.
 legacy/                             An early standalone test script, superseded by
@@ -96,11 +102,13 @@ at least one mismatch between what was assumed and what actually responded.
 
 ## Desktop app
 
-`gui/arctos_can_control_panel.py` — two buttons: "Set Up CAN" (binds the CANable
-adapter to `can0` at 500 kbit/s) and "Disable Motor && Safe to Unplug" (scans for any
-responding joint, disables it, then tears the interface down). Both use `pkexec` for
-the one or two commands that actually need root, rather than requiring the app itself
-to run privileged. Install it into your application menu with:
+`gui/arctos_can_control_panel.py` — the CAN Control Panel, four buttons:
+"Set Up CAN" (binds the CANable adapter to `can0` at 500 kbit/s), "Enable Motor" and
+"Disable Motor" (scan the bus for any responding joint and send it `0xF3 0x01` or
+`0xF3 0x00`), and "Shut Down CAN" (brings the interface down so the adapter can be
+unplugged). The two that need root use `pkexec` for just those commands, rather than
+requiring the app itself to run privileged. Install it into your application menu
+with:
 
 ```bash
 bash gui/install_desktop_entry.sh

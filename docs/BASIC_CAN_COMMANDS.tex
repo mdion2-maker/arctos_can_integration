@@ -1,0 +1,311 @@
+\documentclass[11pt,letterpaper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{backcolour}{rgb}{0.96,0.96,0.94}
+\definecolor{cautionred}{rgb}{0.55,0,0}
+
+% Listings are configured so that anything inside one can be selected from the
+% PDF and pasted straight into a terminal:
+%   numbers=none        no line numbers to catch in the selection
+%   columns=fullflexible no padding spaces inserted between characters
+%   upquote=true        straight quotes, not typographic ones
+%   breaklines=false    a wrapped line would paste with a spurious newline,
+%                       so every command below is kept short enough to fit
+\lstset{
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{backcolour},
+    numbers=none,
+    frame=single,
+    framesep=5pt,
+    columns=fullflexible,
+    keepspaces=true,
+    upquote=true,
+    showstringspaces=false,
+    breaklines=false,
+    xleftmargin=0pt,
+    aboveskip=8pt,
+    belowskip=8pt
+}
+
+\newenvironment{caution}[1]{%
+    \par\addvspace{8pt}%
+    \noindent{\color{cautionred}\rule{\linewidth}{0.8pt}}\par\vspace{2pt}
+    \noindent\textbf{\color{cautionred}Caution: #1}\par\vspace{2pt}
+}{%
+    \par\vspace{2pt}\noindent{\color{cautionred}\rule{\linewidth}{0.4pt}}%
+    \par\addvspace{8pt}%
+}
+
+\title{BASIC CAN COMMANDS \\ \large Arctos Robotic Arm --- terminal quick reference}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+
+Everything here is a command you can select from this PDF and paste directly into
+a terminal. Nothing needs editing except the CAN ID, and Section~\ref{sec:frames}
+gives the ready-made frame for every ID on this arm so you never have to work out
+a checksum by hand.
+
+For why any of this works, see \texttt{Arctos\_CAN\_Interface.pdf}. For bringing up
+a specific joint from scratch, see the two SOP documents.
+
+\tableofcontents
+\newpage
+
+\section{Set the interface up}
+
+The CANable presents as a serial device. \texttt{slcand} bridges it to a Linux
+network interface, and this has to be redone every time the adapter is plugged in
+or re-enumerates. Run these in order.
+
+\subsection{Check the adapter is there}
+\begin{lstlisting}
+lsusb
+\end{lstlisting}
+
+Expect a line containing \texttt{16d0:117e}. Then find the stable device name:
+
+\begin{lstlisting}
+ls -l /dev/serial/by-id/
+\end{lstlisting}
+
+Use the \texttt{/dev/serial/by-id/} name rather than \texttt{/dev/ttyACM0}. The
+\texttt{ttyACM} number changes whenever the adapter re-enumerates; the by-id name
+does not.
+
+\subsection{Bring it up at 500 kbit/s}
+\begin{lstlisting}
+sudo pkill slcand
+sudo ip link delete can0 2>/dev/null
+sudo slcand -o -c -s6 /dev/serial/by-id/usb-Openlight_Labs_CANable2* can0
+sudo ip link set can0 txqueuelen 1000
+sudo ip link set up can0
+\end{lstlisting}
+
+\begin{caution}{The \texttt{-s6} flag is a coded index, not a number}
+\texttt{-s0} is 10k, \texttt{-s1} 20k, \texttt{-s2} 50k, \texttt{-s3} 100k,
+\texttt{-s4} 125k, \texttt{-s5} 250k, \textbf{\texttt{-s6} 500k}, \texttt{-s7}
+800k, \texttt{-s8} 1M. This arm runs at 500 kbit/s so \texttt{-s6} is correct.
+Older scripts in this project used \texttt{-s3} and silently attached at
+100 kbit/s, which looks like a dead bus.
+\end{caution}
+
+\subsection{Verify}
+\begin{lstlisting}
+ip -br link show can0
+\end{lstlisting}
+
+Expect \texttt{can0} followed by \texttt{UP}. That is the whole check.
+
+\begin{caution}{Do not try to set or read the bitrate with \texttt{ip}}
+This does not work on this hardware and will fail:
+\begin{lstlisting}
+sudo ip link set can0 up type can bitrate 500000
+\end{lstlisting}
+That netlink attribute is for native CAN controllers, not slcan. For the same
+reason \texttt{ip -details link show can0} reports \texttt{bitrate 0} and
+\texttt{clock 0} on a perfectly healthy adapter. That is normal, and it is not a
+fault worth chasing. The bitrate was fixed at attach time by \texttt{-s6}.
+\end{caution}
+
+\section{Shut it down so you can unplug}
+
+In this order. Stop any running control script first with Ctrl+C.
+
+\begin{lstlisting}
+sudo ip link set can0 down
+sudo pkill slcand
+\end{lstlisting}
+
+Then unplug the adapter. If a motor is energized and it is safe to release it,
+disable the coils first --- see Section~\ref{sec:frames}.
+
+\begin{caution}{Dropping coils on a gravity-loaded joint lets it fall}
+Disabling a motor removes holding torque. On a bench motor that is harmless; on an
+assembled arm the joint may drop. Support it first, or leave it holding.
+\end{caution}
+
+\section{Ready-made frames for every joint}
+\label{sec:frames}
+
+Every frame is \texttt{[command][data...][checksum]}, and the checksum includes the
+CAN ID:
+
+\begin{lstlisting}
+checksum = (can_id + sum_of_all_other_bytes) & 0xFF
+\end{lstlisting}
+
+Because the ID is in the sum, \textbf{a frame copied from another joint is
+silently rejected}. The table below has the arithmetic already done. Find your
+joint's ID and use that row.
+
+\begin{center}
+\begin{tabular}{lllllll}
+\toprule
+\textbf{ID} & \textbf{Read enc.} & \textbf{Enable} & \textbf{Disable}
+            & \textbf{E-stop} & \textbf{Enable state} & \textbf{Error} \\ \midrule
+\texttt{0x01} & \texttt{001\#3132} & \texttt{001\#F301F5} & \texttt{001\#F300F4} & \texttt{001\#F7F8} & \texttt{001\#3A3B} & \texttt{001\#393A} \\
+\texttt{0x02} & \texttt{002\#3133} & \texttt{002\#F301F6} & \texttt{002\#F300F5} & \texttt{002\#F7F9} & \texttt{002\#3A3C} & \texttt{002\#393B} \\
+\texttt{0x03} & \texttt{003\#3134} & \texttt{003\#F301F7} & \texttt{003\#F300F6} & \texttt{003\#F7FA} & \texttt{003\#3A3D} & \texttt{003\#393C} \\
+\texttt{0x04} & \texttt{004\#3135} & \texttt{004\#F301F8} & \texttt{004\#F300F7} & \texttt{004\#F7FB} & \texttt{004\#3A3E} & \texttt{004\#393D} \\
+\texttt{0x05} & \texttt{005\#3136} & \texttt{005\#F301F9} & \texttt{005\#F300F8} & \texttt{005\#F7FC} & \texttt{005\#3A3F} & \texttt{005\#393E} \\
+\texttt{0x06} & \texttt{006\#3137} & \texttt{006\#F301FA} & \texttt{006\#F300F9} & \texttt{006\#F7FD} & \texttt{006\#3A40} & \texttt{006\#393F} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Emergency stop}
+
+Work out your joint's e-stop line from the table and keep it pasted in a second
+terminal \emph{before} you command any motion. For the joint most recently worked
+on, CAN ID \texttt{0x06}:
+
+\begin{lstlisting}
+cansend can0 006#F7FD
+\end{lstlisting}
+
+\begin{caution}{Check the e-stop is addressed to the right joint}
+An earlier version of this project's documentation gave a joint's emergency stop
+as \texttt{cansend can0 001\#F7F8} when the motor was not on ID \texttt{0x01}. It
+would have done nothing at all. Confirm the ID by scan, then take the matching row
+above.
+\end{caution}
+
+\subsection{Enable and disable coils}
+
+For CAN ID \texttt{0x06}:
+
+\begin{lstlisting}
+cansend can0 006#F301FA
+cansend can0 006#F300F9
+\end{lstlisting}
+
+The first enables, the second disables. An enabled joint holds position under power
+and can move; keep clear of the mechanism before enabling.
+
+\section{Watch what is on the bus}
+
+Everything:
+
+\begin{lstlisting}
+candump can0
+\end{lstlisting}
+
+One joint only, by ID. This example filters to \texttt{0x06}:
+
+\begin{lstlisting}
+candump can0,006:7FF
+\end{lstlisting}
+
+Log to a file while you work:
+
+\begin{lstlisting}
+candump -L can0 > can_log.txt
+\end{lstlisting}
+
+Run \texttt{candump} in a second terminal while sending commands in the first. It
+is the fastest way to see whether a frame went out and whether anything answered.
+
+\section{Read-only queries}
+
+None of these move the motor or change its state, so they are safe to send at any
+time. Replace \texttt{006} and the checksum with your joint's row from
+Section~\ref{sec:frames}.
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{What} & \textbf{Opcode} & \textbf{Expected at rest} \\ \midrule
+Encoder position   & \texttt{0x31} & stable, no jitter, no drift \\
+Velocity           & \texttt{0x32} & zero \\
+Position error     & \texttt{0x39} & small, tens of counts \\
+Enable state       & \texttt{0x3A} & \texttt{01} enabled, \texttt{00} disabled \\
+Shaft protection   & \texttt{0x3E} & \texttt{00} \\
+Liveness           & \texttt{0xF1} & answers \texttt{F1 01} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Read the encoder on \texttt{0x06}:
+
+\begin{lstlisting}
+cansend can0 006#3137
+\end{lstlisting}
+
+The reply is \texttt{[0x31][6 bytes signed position][checksum]}, big-endian, on the
+16384-counts-per-motor-revolution scale. To turn it into joint degrees:
+
+\begin{lstlisting}
+joint_degrees = raw48 * 360.0 / 16384 / gear_ratio
+\end{lstlisting}
+
+\section{Scan for what is actually on the bus}
+
+Never trust a config file or a table for a CAN ID. This sends only the read-only
+\texttt{0x31} query, never enables coils, and never commands motion:
+
+\begin{lstlisting}
+cd ~/arctos_ws/src/arctos_can_control/arctos_can_control
+python3 can_id_scan.py --channel can0 --ids 1-16
+\end{lstlisting}
+
+Exactly one responder is the healthy result. Two or more means another driver is
+powered on the bus with a colliding ID. None, with the board powered and wiring
+confirmed, is the signature of an RS485 board that has no CAN transceiver at all.
+
+\section{A safe test sequence}
+
+In order, from cold. Stop at the first step that does not do what it should.
+
+\begin{enumerate}[leftmargin=*]
+    \item Bring the interface up, confirm \texttt{can0 UP}.
+    \item Start \texttt{candump can0} in a second terminal.
+    \item Scan for the real CAN ID.
+    \item Read the encoder twice and confirm the value is stable.
+    \item Read the enable state and the shaft-protection state.
+    \item Paste your joint's e-stop line into a third terminal, ready but unsent.
+    \item Only now enable the coils, and only if the mechanism is clear.
+    \item Command one small move and confirm the encoder changed by what you asked.
+    \item Disable the coils.
+\end{enumerate}
+
+\section{When something is wrong}
+
+\begin{longtable}{p{0.36\textwidth}p{0.58\textwidth}}
+\toprule
+\textbf{Symptom} & \textbf{What to do} \\ \midrule
+\endhead
+\texttt{can0} does not exist &
+  \texttt{slcand} died, usually because the adapter re-enumerated. Re-run the
+  bring-up. Check \texttt{/dev/serial/by-id/} for the current name. \\
+Adapter is plugged in but \texttt{can0} is missing &
+  Expected. \texttt{slcand} does not restart itself after a replug. \\
+\texttt{ip} shows \texttt{bitrate 0} &
+  Normal on slcan. Not a fault. \\
+Nothing answers any ID &
+  Check panel CAN ID, CAN rate and CANRSP; check CAN\_H, CAN\_L and termination;
+  confirm the driver has power. If still silent, check whether the board is the
+  RS485 variant. \\
+The command was accepted but nothing moved &
+  The bus cannot tell ``not driven'' from ``driven but cannot move''. Disable the
+  coils and turn the joint by hand. \\
+A move under-delivers, then delivers nothing &
+  Stop. Do not resend --- that only heats the motor. Back off and re-attempt once,
+  or investigate the mechanism. \\
+Motor is hot &
+  Stop and let it cool. There is no temperature-read opcode, so nothing in software
+  will warn you. Warm is normal; too hot to touch is not. \\
+\bottomrule
+\end{longtable}
+
+\end{document}

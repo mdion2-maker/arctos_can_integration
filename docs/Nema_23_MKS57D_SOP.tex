@@ -1,0 +1,370 @@
+\documentclass[11pt,letterpaper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{backcolour}{rgb}{0.96,0.96,0.94}
+\definecolor{cautionred}{rgb}{0.55,0,0}
+\definecolor{okgreen}{rgb}{0,0.45,0}
+\definecolor{unverifiedorange}{rgb}{0.75,0.35,0}
+
+% See BASIC_CAN_COMMANDS.tex for why these options are set: everything in a
+% listing must survive being selected from the PDF and pasted into a terminal.
+\lstset{
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{backcolour},
+    numbers=none,
+    frame=single,
+    framesep=5pt,
+    columns=fullflexible,
+    keepspaces=true,
+    upquote=true,
+    showstringspaces=false,
+    breaklines=false,
+    xleftmargin=0pt,
+    aboveskip=8pt,
+    belowskip=8pt
+}
+
+\newenvironment{caution}[1]{%
+    \par\addvspace{8pt}%
+    \noindent{\color{cautionred}\rule{\linewidth}{0.8pt}}\par\vspace{2pt}
+    \noindent\textbf{\color{cautionred}Caution: #1}\par\vspace{2pt}
+}{%
+    \par\vspace{2pt}\noindent{\color{cautionred}\rule{\linewidth}{0.4pt}}%
+    \par\addvspace{8pt}%
+}
+\newcommand{\verified}{{\color{okgreen}\textbf{[VERIFIED]}}}
+\newcommand{\unverified}{{\color{unverifiedorange}\textbf{[UNVERIFIED]}}}
+\newcommand{\passif}[1]{\par\vspace{2pt}\noindent\textbf{\color{okgreen}Pass:} #1\par\vspace{4pt}}
+\newcommand{\failif}[1]{\noindent\textbf{If it fails:} #1\par\vspace{6pt}}
+
+\title{NEMA 23 / MKS SERVO57D --- Bring-Up SOP \\ \large Arctos Robotic Arm --- joint X}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{caution}{This procedure has never been completed on real NEMA 23 hardware}
+No NEMA 23 joint on this arm has ever communicated over CAN. The MKS SERVO57D fitted
+to Joint X turned out to be the \textbf{RS485 variant}, which has no CAN transceiver,
+so every step below that involves the CAN protocol is extrapolated from the
+SERVO42D work rather than confirmed on a 57D.
+
+Each step is tagged \verified{} or \unverified{}. \verified{} means confirmed on
+this arm and expected to carry over directly, which is generally the host-side and
+physical steps. \unverified{} means assumed by analogy with the 42D --- plausible,
+but nobody has seen it work on a 57D. Confirm each of those as you go and update
+this document with what you actually observe.
+\end{caution}
+
+Background, protocol details and troubleshooting live in
+\texttt{Arctos\_CAN\_Interface.pdf}. Bare terminal commands live in
+\texttt{BASIC\_CAN\_COMMANDS.pdf}.
+
+\section*{The joint}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Joint} & X, base and waist rotation \\
+\textbf{CAN ID} & \texttt{0x01} per config; confirm by scan \\
+\textbf{Gear ratio} & 13.5:1 \\
+\textbf{Motor} & NEMA 23, 1.8~N\textperiodcentered m, 2.8~A, 6.35~mm shaft \\
+\textbf{Driver} & MKS SERVO57D \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{caution}{A NEMA 23 is substantially more dangerous than a NEMA 17}
+1.8~N\textperiodcentered m through 13.5:1 is roughly \textbf{24~N\textperiodcentered m
+at the joint}, about 75 times the NEMA 17 joints' output torque, and more than enough
+to injure a hand or destroy a printed part before you can react. Keep clear of the
+mechanism, keep the emergency stop pasted in a second terminal, and keep a hand on
+the power switch for every motion step.
+\end{caution}
+
+\section*{Step 0 --- Confirm the board is the CAN variant \verified}
+
+\textbf{Do this first. It is the failure that has already cost this project weeks.}
+
+\begin{enumerate}[leftmargin=*]
+    \item Read the part number and silkscreen on the MKS SERVO57D board.
+    \item Confirm it is the \textbf{CAN} variant, not RS485. The two look similar and
+          both present a differential pair.
+\end{enumerate}
+
+\begin{caution}{RS485 boards will never work, at any bitrate or address}
+RS485 carries MKS's own async serial protocol, not CAN framing. A CAN controller and
+an RS485 transceiver cannot talk over the same wires. If this board is RS485 you must
+either swap it for the CAN variant, which keeps this whole procedure and every script
+valid, or treat the joint as a separate RS485 subsystem with its own adapter and
+driver software, which is out of scope here.
+\end{caution}
+
+\passif{Board is confirmed to be the CAN variant.}
+\failif{Stop. No amount of software work will make an RS485 board appear on the bus.}
+
+\section*{Step 1 --- Pre-power electrical checks \verified}
+
+\begin{enumerate}[leftmargin=*]
+    \item Everything powered off, measure CAN\_H to CAN\_L. Expect about 60~$\Omega$.
+    \item Confirm only CAN\_H, CAN\_L and GND run between the CANable and the
+          controller.
+    \item \textbf{Check the supply.} A NEMA 23 at 2.8~A draws far more than the NEMA
+          17 joints. Confirm the supply is rated for it and that the wiring to the
+          driver is sized appropriately.
+    \item Confirm the joint is mechanically clear and that you know its travel limits.
+\end{enumerate}
+
+\passif{About 60~$\Omega$, correct wiring, adequate supply.}
+
+\section*{Step 2 --- Configure the controller panel \unverified}
+
+The 57D's menu layout has not been confirmed to match the 42D's. Set and
+\textbf{save}:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+CAN ID & \texttt{0x01} \\
+CAN Rate & \texttt{500} \\
+CAN Response, shown as CANRSP & \texttt{ENABLE} \\
+CAN CRC & \texttt{SUM-8} \\
+Working current & 2.8~A or below, the NEMA 23's rating \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Power-cycle after saving.
+
+\begin{caution}{Set the working current deliberately}
+A 42D in this project was found storing 3000~mA against a 1.2~A motor. On a 2.8~A
+NEMA 23 the consequences of an over-set current are correspondingly larger.
+\end{caution}
+
+\passif{Settings survive a power cycle.}
+\failif{If the menu differs from the above, record what it actually offers and update
+this document. That is exactly the unverified part.}
+
+\section*{Step 3 --- Bring up the CAN interface \verified}
+
+Identical to the NEMA 17 procedure. This is host-side and motor-independent.
+
+\begin{lstlisting}
+lsusb
+ls -l /dev/serial/by-id/
+sudo pkill slcand
+sudo ip link delete can0 2>/dev/null
+sudo slcand -o -c -s6 /dev/serial/by-id/usb-Openlight_Labs_CANable2* can0
+sudo ip link set can0 txqueuelen 1000
+sudo ip link set up can0
+ip -br link show can0
+\end{lstlisting}
+
+\passif{The last command prints \texttt{can0} followed by \texttt{UP}.}
+
+\section*{Step 4 --- Confirm the real CAN ID \unverified}
+
+The scan itself is verified; what is unverified is whether a 57D answers the
+\texttt{0x31} query the same way a 42D does.
+
+\begin{lstlisting}
+cd ~/arctos_ws/src/arctos_can_control/arctos_can_control
+python3 can_id_scan.py --channel can0 --ids 1-16
+\end{lstlisting}
+
+Read-only. It never enables coils and never commands motion.
+
+\passif{Exactly one responder, with a valid checksum.}
+\failif{\textbf{Total silence with the board powered and the wiring confirmed is the
+RS485 signature.} Go back to Step 0 and check the part number before doing anything
+else. Note that the slcan adapter does not populate the kernel's bus-error counters,
+so you cannot use ``zero errors'' as corroboration here.}
+
+\section*{Step 5 --- Read-only health check \unverified}
+
+\begin{lstlisting}
+python3 joint_reliability_test.py --channel can0 --can-id 0x01 \
+    --gear-ratio 13.5 --samples 200
+\end{lstlisting}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Query} & \textbf{Opcode} & \textbf{Expected, by analogy} \\ \midrule
+Encoder          & \texttt{0x31} & stable; zero jitter, zero drift \\
+Velocity         & \texttt{0x32} & zero \\
+Position error   & \texttt{0x39} & small \\
+Enable state     & \texttt{0x3A} & \texttt{01} \\
+Shaft protection & \texttt{0x3E} & \texttt{00} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{caution}{Confirm the encoder resolution on the 57D}
+This procedure assumes 16384 counts per revolution and 3200 microstep pulses per
+revolution, as on the 42D. \textbf{Verify this before trusting any angle
+arithmetic}: command a known number of pulses and check that the encoder delta
+matches. If the 57D differs, every conversion in this SOP changes.
+\end{caution}
+
+\passif{100\% response, zero checksum failures, zero jitter at rest.}
+
+\section*{Step 6 --- Check the mechanism by hand \verified}
+
+\begin{enumerate}[leftmargin=*]
+    \item Disable the coils:
+\begin{lstlisting}
+cansend can0 001#F300F4
+\end{lstlisting}
+    \item Confirm the enable state now reads \texttt{00}:
+\begin{lstlisting}
+cansend can0 001#3A3B
+\end{lstlisting}
+    \item Turn the joint output by hand, gently, both directions, watching the
+          encoder.
+\end{enumerate}
+
+\begin{caution}{Do not drop coils on a loaded base joint}
+Joint X carries the entire arm above it. Removing holding torque may let the whole
+assembly swing. Only do this with the arm supported or removed.
+\end{caution}
+
+\passif{The encoder tracks your hand both ways and the motion feels smooth.}
+\failif{Gritty resistance means the gear mesh needs a plastic-safe grease. No encoder
+change while the output turns means the motor is not coupled to it.}
+
+\section*{Step 7 --- First commanded motion \unverified}
+
+Paste the emergency stop into a second terminal, ready but unsent, before sending
+anything:
+
+\begin{lstlisting}
+cansend can0 001#F7F8
+\end{lstlisting}
+
+Then one small move:
+
+\begin{lstlisting}
+python3 joint_unstick_move_test.py --can-id 0x01 --gear-ratio 13.5 \
+    --step-degrees 0.25 --num-steps 1 --max-unstick 0 \
+    --band-lo -1 --band-hi 1 --speed 25
+\end{lstlisting}
+
+\begin{caution}{Start smaller than you would on a NEMA 17}
+At 13.5:1 the reduction is far lower than the NEMA 17 joints' 48:1 and 67.82:1, so
+the same commanded joint angle turns the motor far less, and the joint moves much
+faster for a given motor speed. A 0.25\textdegree{} joint step here is only about
+3.4\textdegree{} of motor rotation. Verify direction and magnitude on this first
+step before increasing anything.
+\end{caution}
+
+\passif{About 100\% of commanded, with \texttt{FD=[1, 2]}.}
+\failif{Do not retry into a stall. Return to Step 6.}
+
+\section*{Step 8 --- Stepped travel test \unverified}
+
+\begin{lstlisting}
+python3 joint_unstick_move_test.py --can-id 0x01 --gear-ratio 13.5 \
+    --step-degrees 2.0 --num-steps 5 --max-unstick 0 \
+    --band-lo -15 --band-hi 15 --speed 25
+\end{lstlisting}
+
+Then the same distance back:
+
+\begin{lstlisting}
+python3 joint_unstick_move_test.py --can-id 0x01 --gear-ratio 13.5 \
+    --step-degrees -2.0 --num-steps 5 --max-unstick 0 \
+    --band-lo -15 --band-hi 15 --speed 25
+\end{lstlisting}
+
+\passif{Every step 99--101\% with \texttt{FD 02}, and the round trip returns to
+start.}
+
+\section*{Step 9 --- Establish this motor's speed limit \unverified}
+
+\textbf{The NEMA 17 figures do not transfer.} The 57D has different winding
+inductance and a different torque-speed curve, so this motor's usable ceiling must
+be measured rather than assumed. The measured table in
+\texttt{Arctos\_CAN\_Interface.pdf} is 42D data; do not read Joint B's numbers
+across to a 57D.
+
+With the joint unloaded and clear:
+
+\begin{lstlisting}
+python3 joint_speed_limit_test.py --can-id 0x01 --gear-ratio 13.5 \
+    --arc-lo -12 --arc-hi 12 --band-lo -15 --band-hi 15 \
+    --speeds 50,100,150,200,250 --accel 8 --pause-s 15
+\end{lstlisting}
+
+The usable limit is the highest commanded speed where actual rpm still tracks it to
+within about 1\%.
+
+\begin{caution}{Keep the duty cycle down}
+Running a long ladder of trials back to back overheats the motor. Fifteen seconds
+between trials is reasonable; one second is not. Stop as soon as you have the
+answer, and put a hand on the motor part way through --- there is no temperature
+opcode, so nothing in software will warn you.
+\end{caution}
+
+Record the result here once measured:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Tracks commanded within 1\% up to & \underline{\hspace{3cm}} rpm \\
+Roll-off begins                   & \underline{\hspace{3cm}} rpm \\
+Saturation ceiling                & \underline{\hspace{3cm}} rpm \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section*{Step 10 --- Acceptance}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Check} & \textbf{Criterion} \\ \midrule
+Board variant     & confirmed CAN, not RS485 \\
+CAN ID            & confirmed by scan \\
+Comms             & 100\% response, zero checksum failures \\
+Encoder at rest   & zero jitter, zero drift \\
+Encoder scale     & confirmed for the 57D, not assumed \\
+Hand check        & smooth, tracks both directions \\
+Per-step accuracy & 99--101\% of commanded \\
+Status frames     & \texttt{FD 02} on every step \\
+Round trip        & returns to start \\
+Speed limit       & measured and recorded above \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section*{Step 11 --- Shutdown \verified}
+
+Stop any running script with Ctrl+C first.
+
+\begin{lstlisting}
+cansend can0 001#F300F4
+sudo ip link set can0 down
+sudo pkill slcand
+\end{lstlisting}
+
+Then unplug the adapter. Skip the first line if the arm above this joint is not
+supported and needs it to keep holding.
+
+\section*{Update this document}
+
+Every step tagged \unverified{} is a claim nobody has tested on a 57D. When you get
+CAN-variant hardware onto the bus, work through them in order and replace the tag
+with what you actually saw, including anything that turned out to differ from the
+42D.
+
+\end{document}
