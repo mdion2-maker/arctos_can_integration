@@ -111,19 +111,24 @@ X & Base and waist rotation & \texttt{0x01} & NEMA 23 / SERVO57D & 13.5:1  \\
 Y & not confirmed           & \texttt{0x02} & ---                & 150.0:1 \\
 Z & not confirmed           & \texttt{0x03} & ---                & 150.0:1 \\
 A & Elbow                   & \texttt{0x04} & NEMA 17 / SERVO42D & 48.0:1  \\
-C & Wrist joint             & \texttt{0x05} & NEMA 17 / SERVO42D & 67.82:1 \\
-B & Wrist rotation          & \texttt{0x06} & NEMA 17 / SERVO42D & 67.82:1 \\
+B & Wrist rotation          & \texttt{0x05} & NEMA 17 / SERVO42D & 67.82:1 \\
+C & Wrist joint             & \texttt{0x06} & NEMA 17 / SERVO42D & 67.82:1 \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\begin{caution}{Joints B and C are documented backwards in several older files}
-Joint B is \texttt{0x06}. Joint C is \texttt{0x05}. Files that state the opposite
-include \texttt{joint\_b\_final\_reliability\_test.py}, the legacy
-\texttt{joint\_b\_micro\_move\_text\_v2.py}, and the old cheat sheet, all of which
-hard-code Joint B as \texttt{0x05}. A scan on 2026-09-02 with only Joint B connected
-returned a single responder at \texttt{0x06}. Joint A's \texttt{0x04} and its 48:1
-ratio are empirically verified; the rest are config values.
+\begin{caution}{A driver can be found on the wrong CAN ID --- fix the panel, not the map}
+The table above is the \emph{intended} assignment and matches
+\texttt{arctos\_controller.yaml}. A controller's panel can hold a different value.
+On 2026-09-02 a scan with only Joint B connected returned a single responder at
+\texttt{0x06}, which is Joint C's ID: that driver's panel had simply been saved
+wrong. The work done that day was on Joint B regardless of the ID it answered on.
+
+When a scan disagrees with this table, that is evidence the \textbf{panel needs
+reprogramming}, not evidence the map is wrong. Reprogram the driver rather than
+editing the map, and never drive a joint until the scan and the map agree. Joint
+A's \texttt{0x04} and its 48:1 ratio are empirically verified; the rest are config
+values.
 \end{caution}
 
 \begin{caution}{Always confirm a CAN ID against real hardware}
@@ -651,9 +656,11 @@ These four documents replace five older ones. The following items were
 any surviving copy.
 
 \begin{itemize}[leftmargin=*]
-    \item \textbf{Joint B and C CAN IDs.} Older files hard-code Joint B as
-          \texttt{0x05}. Joint B is \texttt{0x06} and Joint C is \texttt{0x05},
-          confirmed by scan.
+    \item \textbf{Joint B and C CAN IDs.} Joint B is \texttt{0x05} and Joint C is
+          \texttt{0x06}, as the older files and the controller config state. An
+          interim revision of this document asserted the reverse after a scan found
+          Joint B answering on \texttt{0x06}; that driver's panel ID was wrong, and
+          the map was right. Scan before driving, and correct the panel.
     \item \textbf{Encoder opcode.} An old guide standardized on \texttt{0x30} and
           described \texttt{0x31} as unverified. That is backwards. \texttt{0x31} is
           what the real C++ driver uses and what every script here uses.

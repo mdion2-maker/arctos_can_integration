@@ -64,18 +64,21 @@ Background, protocol details and troubleshooting live in
 \toprule
 \textbf{Joint} & \textbf{CAN ID} & \textbf{Gear ratio} & \textbf{Role} \\ \midrule
 A & \texttt{0x04} & 48.0:1  & Elbow \\
-C & \texttt{0x05} & 67.82:1 & Wrist joint \\
-B & \texttt{0x06} & 67.82:1 & Wrist rotation \\
+B & \texttt{0x05} & 67.82:1 & Wrist rotation \\
+C & \texttt{0x06} & 67.82:1 & Wrist joint \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\begin{caution}{B and C are documented backwards in older files}
-Joint B is \texttt{0x06} and Joint C is \texttt{0x05}. Several files in this project
-state the opposite, including \texttt{joint\_b\_final\_reliability\_test.py} and the
-old cheat sheet, both of which hard-code Joint B as \texttt{0x05}. A bus scan on
-2026-09-02 with only Joint B connected returned a single responder at \texttt{0x06}.
-Confirm by scan in Step 3 and believe the scan, not any table --- including this one.
+\begin{caution}{Confirm the ID by scan, and reprogram the panel if it disagrees}
+The table above is the intended assignment. A controller's panel can hold a
+different value: on 2026-09-02 Joint B was found answering on \texttt{0x06}, which
+is Joint C's ID, because that driver's panel had been saved wrong.
+
+If the scan in Step 3 disagrees with this table, \textbf{go back to Step 1 and
+reprogram the panel} rather than carrying on against the wrong ID. Two joints
+sharing an ID will collide, and a frame sent to the wrong ID drives the wrong
+joint.
 \end{caution}
 
 Wherever a command below shows \texttt{0x06} and \texttt{67.82}, substitute your own
