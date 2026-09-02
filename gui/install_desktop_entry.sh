@@ -1,5 +1,5 @@
 #!/bin/bash
-# Installs the Arctos CAN Control Panel into the application menu.
+# Installs the CAN Control Panel into the application menu.
 # Safe to re-run any time (e.g. after moving arctos_ws) to refresh the entry.
 set -e
 
@@ -14,8 +14,8 @@ chmod +x "$GUI_DIR/arctos_can_control_panel.py"
 cat > "$APPS_DIR/arctos-can-control-panel.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Arctos CAN Control Panel
-Comment=Set up or safely shut down the CANable adapter for the Arctos arm
+Name=CAN Control Panel
+Comment=Set up the CANable adapter and enable/disable joints on the Arctos arm
 Exec=/usr/bin/python3 $GUI_DIR/arctos_can_control_panel.py
 Icon=network-transmit-receive
 Terminal=false
@@ -29,5 +29,5 @@ if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$APPS_DIR" 2>/dev/null || true
 fi
 
-echo "Installed. Search for 'Arctos CAN Control Panel' in the application menu/Activities."
+echo "Installed. Search for 'CAN Control Panel' in the application menu/Activities."
 echo "(You can also run it directly any time: python3 $GUI_DIR/arctos_can_control_panel.py)"

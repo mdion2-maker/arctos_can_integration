@@ -1,0 +1,382 @@
+\documentclass[11pt,letterpaper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{backcolour}{rgb}{0.96,0.96,0.94}
+\definecolor{cautionred}{rgb}{0.55,0,0}
+\definecolor{okgreen}{rgb}{0,0.45,0}
+
+% See BASIC_CAN_COMMANDS.tex for why these options are set: everything in a
+% listing must survive being selected from the PDF and pasted into a terminal.
+\lstset{
+    basicstyle=\ttfamily\small,
+    backgroundcolor=\color{backcolour},
+    numbers=none,
+    frame=single,
+    framesep=5pt,
+    columns=fullflexible,
+    keepspaces=true,
+    upquote=true,
+    showstringspaces=false,
+    breaklines=false,
+    xleftmargin=0pt,
+    aboveskip=8pt,
+    belowskip=8pt
+}
+
+\newenvironment{caution}[1]{%
+    \par\addvspace{8pt}%
+    \noindent{\color{cautionred}\rule{\linewidth}{0.8pt}}\par\vspace{2pt}
+    \noindent\textbf{\color{cautionred}Caution: #1}\par\vspace{2pt}
+}{%
+    \par\vspace{2pt}\noindent{\color{cautionred}\rule{\linewidth}{0.4pt}}%
+    \par\addvspace{8pt}%
+}
+\newcommand{\passif}[1]{\par\vspace{2pt}\noindent\textbf{\color{okgreen}Pass:} #1\par\vspace{4pt}}
+\newcommand{\failif}[1]{\noindent\textbf{If it fails:} #1\par\vspace{6pt}}
+
+\title{NEMA 17 / MKS SERVO42D --- Bring-Up SOP \\ \large Arctos Robotic Arm --- joints A, B and C}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+
+Follow these steps in order to take a NEMA 17 joint from powered-off to trusted for
+motion. Every step has a pass condition; if one fails, stop there rather than
+continuing.
+
+Background, protocol details and troubleshooting live in
+\texttt{Arctos\_CAN\_Interface.pdf}. Bare terminal commands live in
+\texttt{BASIC\_CAN\_COMMANDS.pdf}.
+
+\section*{Which joint you have}
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Joint} & \textbf{CAN ID} & \textbf{Gear ratio} & \textbf{Role} \\ \midrule
+A & \texttt{0x04} & 48.0:1  & Elbow \\
+B & \texttt{0x05} & 67.82:1 & Wrist rotation \\
+C & \texttt{0x06} & 67.82:1 & Wrist joint \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{caution}{Confirm the ID by scan, and reprogram the panel if it disagrees}
+The table above is the intended assignment. A controller's panel can hold a
+different value: on 2026-09-02 Joint B was found answering on \texttt{0x06}, which
+is Joint C's ID, because that driver's panel had been saved wrong.
+
+If the scan in Step 3 disagrees with this table, \textbf{go back to Step 1 and
+reprogram the panel} rather than carrying on against the wrong ID. Two joints
+sharing an ID will collide, and a frame sent to the wrong ID drives the wrong
+joint.
+\end{caution}
+
+Wherever a command below shows \texttt{0x06} and \texttt{67.82}, substitute your own
+joint's CAN ID and gear ratio.
+
+\section*{Step 0 --- Before applying power}
+\begin{enumerate}[leftmargin=*]
+    \item Confirm the controller is the \textbf{CAN variant} of the MKS SERVO42D.
+          Read the part number on the board. The RS485 variant has no CAN
+          transceiver and will never respond, whatever you do in software.
+    \item Everything powered off, measure CAN\_H to CAN\_L. Expect about
+          60~$\Omega$.
+    \item Confirm only CAN\_H, CAN\_L and GND run between the CANable and the
+          controller. Do not connect the CANable's power lines.
+    \item Confirm the joint is mechanically clear, and that you know its travel
+          limits if it is mounted on the arm.
+\end{enumerate}
+\passif{About 60~$\Omega$ across the bus, and a confirmed CAN-variant board.}
+\failif{120~$\Omega$ means only one terminator is present. An open circuit means
+broken wiring. Fix it before continuing.}
+
+\section*{Step 1 --- Configure the controller panel}
+
+Power the controller and set these on its own display, then \textbf{save}:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+CAN ID & the ID for this joint \\
+CAN Rate & \texttt{500} \\
+CAN Response, shown as CANRSP & \texttt{ENABLE} \\
+CAN CRC & \texttt{SUM-8} \\
+Working current & 1.2~A or below, the NEMA 17's rating \\
+Working mode & note what it is set to \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Power-cycle the controller after saving. The CAN ID in particular has to be
+committed, not merely displayed.
+
+\begin{caution}{Set the working current deliberately}
+A controller in this project was found storing a 3000~mA default against a motor
+rated 1.2~A, roughly two and a half times over. Check this on every new controller.
+\end{caution}
+
+\begin{caution}{A working-mode mismatch imitates a communication fault}
+If the panel's working mode disagrees with what a motion command assumes, the
+controller will accept a frame and acknowledge its checksum without turning the
+shaft. Confirm the mode before concluding that a ``no motion'' result is a wiring or
+CAN problem.
+\end{caution}
+\passif{Settings survive the power cycle.}
+
+\section*{Step 2 --- Bring up the CAN interface}
+
+\begin{lstlisting}
+lsusb
+ls -l /dev/serial/by-id/
+sudo pkill slcand
+sudo ip link delete can0 2>/dev/null
+sudo slcand -o -c -s6 /dev/serial/by-id/usb-Openlight_Labs_CANable2* can0
+sudo ip link set can0 txqueuelen 1000
+sudo ip link set up can0
+ip -br link show can0
+\end{lstlisting}
+
+\passif{The last command prints \texttt{can0} followed by \texttt{UP}.}
+\failif{Re-check the device name; it changes whenever the adapter re-enumerates.
+\texttt{bitrate 0} in \texttt{ip -details} output is normal on slcan and is not a
+fault.}
+
+\section*{Step 3 --- Confirm the real CAN ID}
+
+Never assume the ID from a config file or a table.
+
+\begin{lstlisting}
+cd ~/arctos_ws/src/arctos_can_control/arctos_can_control
+python3 can_id_scan.py --channel can0 --ids 1-16
+\end{lstlisting}
+
+This sends only the read-only \texttt{0x31} query. It never enables coils and never
+commands motion, so it is safe at any time.
+
+\passif{Exactly one responder, and its ID is the one you set in Step 1.}
+\failif{No responders: re-check the panel settings, the wiring, and the board's part
+number. Several responders: another driver is powered on the bus with a colliding
+ID. Resolve that before going further.}
+
+\section*{Step 4 --- Read-only health check}
+
+With the ID confirmed, check the link is trustworthy before commanding anything.
+
+\begin{lstlisting}
+python3 joint_reliability_test.py --channel can0 --can-id 0x06 \
+    --gear-ratio 67.82 --samples 200
+\end{lstlisting}
+
+With the joint at rest, expect:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Query} & \textbf{Opcode} & \textbf{Expected} \\ \midrule
+Encoder          & \texttt{0x31} & stable; zero jitter, zero drift \\
+Velocity         & \texttt{0x32} & zero \\
+Position error   & \texttt{0x39} & small, tens of counts \\
+Enable state     & \texttt{0x3A} & \texttt{01}; these drivers power up enabled \\
+Shaft protection & \texttt{0x3E} & \texttt{00} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\passif{100\% response rate, zero checksum failures, zero encoder jitter at rest.}
+\failif{Any checksum failure or dropped response is a wiring or bitrate problem. Do
+not proceed to motion.}
+
+\section*{Step 5 --- Check the mechanism by hand}
+
+Do this before the motor ever drives the joint. It separates mechanical faults from
+electrical ones, which the bus on its own cannot distinguish.
+
+\begin{enumerate}[leftmargin=*]
+    \item Disable the coils. For \texttt{0x06}:
+\begin{lstlisting}
+cansend can0 006#F300F9
+\end{lstlisting}
+    \item Confirm the state is now \texttt{00}:
+\begin{lstlisting}
+cansend can0 006#3A40
+\end{lstlisting}
+    \item Turn the joint output by hand, gently, both directions, watching the
+          encoder.
+\end{enumerate}
+
+\begin{caution}{Only drop coils if the joint is not gravity-loaded}
+On an assembled arm this removes holding torque and the joint may fall. Support it,
+or skip this step if it cannot be done safely.
+\end{caution}
+
+\passif{The encoder tracks your hand in both directions and the motion feels smooth.
+This proves the gearbox transmits and that nothing is skipping.}
+\failif{Gritty or catching resistance means the gear mesh needs a plastic-safe PTFE
+or silicone grease. No encoder movement while the output turns means the motor shaft
+is not following: check the coupling, the grub screw and the bore. A hard stop at
+one repeatable angle is usually a misassembled gear rather than roughness --- on
+Joint B a gear seated in the wrong position produced a hard limit at exactly the
+same angle on eight consecutive attempts.}
+
+\section*{Step 6 --- First commanded motion}
+
+Paste your joint's emergency stop into a second terminal, ready but unsent, before
+you send anything. For \texttt{0x06}:
+
+\begin{lstlisting}
+cansend can0 006#F7FD
+\end{lstlisting}
+
+Re-enable the coils, then command one small move:
+
+\begin{lstlisting}
+python3 joint_unstick_move_test.py --can-id 0x06 --gear-ratio 67.82 \
+    --step-degrees 0.25 --num-steps 1 --max-unstick 0 \
+    --band-lo -1 --band-hi 1
+\end{lstlisting}
+
+\begin{caution}{Always set the band explicitly}
+Some joints have a \texttt{home\_position} and an \texttt{opposite\_limit} of
+\texttt{0.0} in \texttt{arctos\_controller.yaml}, which produces an inverted and
+unusable safe band. Pass the band on the command line yourself, every time.
+\end{caution}
+
+\passif{The step reports about 100\% of commanded and the status frames show
+\texttt{FD=[1, 2]}. Both frames matter: \texttt{FD 01} on its own means the command
+started but never finished.}
+\failif{Do not retry blindly --- that only heats the motor. Go back to Step 5.}
+
+\section*{Step 7 --- Stepped travel test}
+
+Extend to real travel, one direction and then the other. Keep the step size and
+count inside the joint's safe range.
+
+\begin{lstlisting}
+python3 joint_unstick_move_test.py --can-id 0x06 --gear-ratio 67.82 \
+    --step-degrees 2.0 --num-steps 9 --max-unstick 0 \
+    --band-lo -25 --band-hi 25 --speed 25
+\end{lstlisting}
+
+Then the same distance back, to close the loop:
+
+\begin{lstlisting}
+python3 joint_unstick_move_test.py --can-id 0x06 --gear-ratio 67.82 \
+    --step-degrees -2.0 --num-steps 9 --max-unstick 0 \
+    --band-lo -25 --band-hi 25 --speed 25
+\end{lstlisting}
+
+\passif{Every step 99--101\% of commanded with \texttt{FD 02}, and the round trip
+returns to the starting position within a few encoder counts.}
+\failif{A step that under-delivers followed by a step that delivers nothing means
+the joint is against something, or the motor has lost drive. Stop and diagnose. Do
+not increase torque and do not retry.}
+
+\section*{Step 8 --- Sweep test, if the mesh is rough}
+
+Only needed if Step 7 showed a rough patch that a hand could push through. This
+sweeps back and forth across the spot for a fixed time, backing off and re-attempting
+whenever a step under-delivers.
+
+\begin{lstlisting}
+python3 joint_sweep_unstick_test.py --can-id 0x06 --gear-ratio 67.82 \
+    --sweep-lo -10 --sweep-hi 10 --step-degrees 1.0 \
+    --backoff-degrees 0.5 --band-lo -25 --band-hi 25 --duration-s 150
+\end{lstlisting}
+
+\passif{Zero unstick cycles used, and every step 99--101\%.}
+\failif{If the joint stops at the \emph{same} angle every time, that is a mechanical
+limit, not roughness --- open the gearbox rather than working at it. Repeated
+back-and-forth through a hard particle embeds it and wears printed teeth.}
+
+\section*{Step 9 --- Measure the speed ceiling}
+
+\begin{lstlisting}
+python3 joint_speed_limit_test.py --can-id 0x06 --gear-ratio 67.82 \
+    --arc-lo -24 --arc-hi 24 --band-lo -25 --band-hi 25 \
+    --speeds 100,150,175,200,250 --accel 8 --pause-s 15
+\end{lstlisting}
+
+The usable limit is the highest commanded speed where actual rpm still tracks it to
+within about 1\%.
+
+\begin{caution}{Keep the duty cycle down}
+Running a long ladder of trials back to back overheats the motor. Fifteen seconds
+between trials is reasonable; one second is not. Stop as soon as you have the
+answer, and put a hand on the motor part way through --- there is no temperature
+opcode, so nothing in software will warn you.
+\end{caution}
+
+Measured result for Joint B, through its 67.82:1 gearbox:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Tracks commanded within 1\% up to & 150 rpm \\
+Roll-off begins                   & between 150 and 165 rpm \\
+Saturation ceiling                & about 165 rpm \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A bare Servo42D on the bench tracks to 225 rpm and saturates near 310. A geared
+joint saturates well below that, so measure each joint rather than inheriting the
+bench figure.
+
+\section*{Step 10 --- Acceptance}
+
+The joint is ready for use when all of these hold:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Check} & \textbf{Criterion} \\ \midrule
+CAN ID            & confirmed by scan \\
+Comms             & 100\% response, zero checksum failures \\
+Encoder at rest   & zero jitter, zero drift \\
+Hand check        & smooth, encoder tracks both directions \\
+Per-step accuracy & 99--101\% of commanded \\
+Status frames     & \texttt{FD 02} on every step \\
+Round trip        & returns to start within a few counts \\
+Shaft protection  & still \texttt{00} \\
+Speed limit       & measured and written down \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section*{Step 11 --- Operating limits}
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Stay at or below the measured saturation speed.} Commanding more
+          buys no extra speed and only adds current and heat.
+    \item \textbf{Use \texttt{0xFD} for all motion.} Do not use \texttt{0xF5}.
+    \item \textbf{Never retry into a stall.} Back off and re-attempt once, or stop.
+    \item \textbf{Disable coils between tests}, unless the joint is gravity-loaded,
+          in which case leave it holding.
+    \item \textbf{Never enable shaft protection} (\texttt{0x88}). It has a history of
+          false positives and latches the driver.
+\end{itemize}
+
+\section*{Step 12 --- Shutdown}
+
+Stop any running script with Ctrl+C first.
+
+\begin{lstlisting}
+cansend can0 006#F300F9
+sudo ip link set can0 down
+sudo pkill slcand
+\end{lstlisting}
+
+Then unplug the adapter. Skip the first line if the joint is gravity-loaded and
+needs to keep holding.
+
+\end{document}
