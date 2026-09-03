@@ -692,6 +692,39 @@ Motor warm but not hot &
 Driver stops responding mid-test &
   Check power and connectors first. This has been an accidental unplug more than
   once. \\
+\textbf{Encoder tracks perfectly but the arm does not move} &
+  \textbf{Suspect the drivetrain, not the driver.} The encoder is on the motor
+  shaft, upstream of the reduction, so slipping cycloidal gears produce a flawless
+  trace --- delivered counts matching commanded --- for an output going nowhere.
+  Slip also \emph{unloads} the motor, so no stall, torque or position-error
+  heuristic will fire. Confirm motion at the output before trusting any encoder
+  result. \\
+Endstop never changes \texttt{0x34}, sensor LED does light &
+  On a 42D, limit port remap is probably not enabled, so bit 0 is reporting the
+  empty \texttt{IN\_1} terminal rather than \texttt{En}. Send \texttt{9E 01}.
+  There is no read-back, so it cannot be confirmed by query.
+  Section~\ref{sec:endstops}. \\
+Both endstop inputs read low at rest &
+  Not ``nothing connected'' --- an unwired input reads \emph{high}. Most likely a
+  reversed 3-pin sensor plug: \texttt{+V} sits in the middle, so reversing it
+  swaps \texttt{Signal} and \texttt{GND} and straps the driver input to the
+  module's ground while leaving the sensor powered and its LED lit. Turn the plug
+  around. \\
+Sensor LED lights but the \texttt{0x34} bit does not move &
+  The sensor is detecting; the signal is not reaching the input pin. The fault is
+  in the wire between them. Watching LED and bit together is what localises this. \\
+Endstop bit flickers rapidly while parked &
+  A magnet sitting at the edge of the sensor's range, crossing its threshold
+  repeatedly. Release edges are narrow --- 0.062\textdegree{} measured on Joint X.
+  Move the sensor or magnet; do not fix it in software. \\
+A move continues after the script exits &
+  Expected. \texttt{ENABLE\_MOTOR 00} does not cancel an in-flight \texttt{0xFD};
+  only \texttt{EMERGENCY\_STOP (0xF7)} does. Send \texttt{0xF7} before the coil
+  disable. \\
+Motors hold torque the moment they are powered &
+  The \texttt{En} option is set to \texttt{Hold} (always enabled). Set it back to
+  active-low with \texttt{SET\_EN\_ACTIVE (0x85)} data \texttt{00}. Do not apply
+  this to a joint using limit port remap, where \texttt{En} is a limit input. \\
 \bottomrule
 \end{longtable}
 

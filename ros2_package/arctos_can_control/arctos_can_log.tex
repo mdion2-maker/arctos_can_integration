@@ -798,23 +798,48 @@ the joint \textbf{clockwise}; \texttt{0x80} counts up and turns it
 counter-clockwise. On C the same bytes mean the opposite, so \textbf{direction
 bytes do not transfer between joints}.
 
-Both joints so far share one relationship worth testing further: the encoder
-counting \emph{down} corresponded to clockwise on each. If that holds on a third
-joint it is a far more useful rule than a byte per joint, since the encoder sign
-is readable over the bus. Two samples is not enough to rely on it.
+An earlier draft of this entry proposed a cross-joint rule --- that the encoder
+counting \emph{down} always corresponded to clockwise --- on the strength of C and
+X agreeing. \textbf{Joint Y is the third sample and it breaks the rule}: on Y,
+\texttt{0x00} counts the encoder down and turns the joint \emph{counter}-clockwise.
 
-\subsection{X's endstop: found, but on the wrong input}
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Joint} & \textbf{encoder counting down means} \\ \midrule
+C & clockwise \\
+X & clockwise \\
+Y & \textbf{counter-clockwise} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+There is no cross-joint relationship between encoder sign and physical direction.
+It must be established per joint, by eye, and written down.
+
+\subsection{X's endstop: found, and X has only one}
 A bounded search --- one slow move under continuous \texttt{0x34} polling, with
 \texttt{0xF7} sent the instant a bit dropped --- located a mounted sensor
 \textbf{112.05\textdegree{} clockwise} of the search start. Detection took 8294
 polls over 31\,s, about one sample every 0.013\textdegree{} of joint travel, and
 the stop was immediate.
 
-\textbf{It triggered \texttt{IN\_2}, not \texttt{IN\_1}.} \texttt{GoHome} homes to
-the \emph{left} limit on \texttt{IN\_1}, so as wired the driver's own homing will
-never see this switch. Either it is X's home switch on the wrong input and the
-signal wire should move to \texttt{IN\_1}, or it is genuinely the far limit and a
-second sensor exists counter-clockwise. Unresolved.
+\textbf{It triggered \texttt{IN\_2}, not \texttt{IN\_1}}, which at the time looked
+like the ``swapped sensors'' fault the \texttt{ros2\_arctos} README warns about.
+It is not. Joint Y later established the build's convention --- clockwise sensor
+on \texttt{IN\_2}, counter-clockwise sensor on \texttt{IN\_1} --- and X's sensor
+was found by searching \emph{clockwise}, so it is on exactly the right input.
+
+\textbf{X simply has only one endstop.} Confirmed with the machine's owner. That
+has a hard consequence:
+
+\begin{caution}{Never send \texttt{GoHome} to Joint X}
+\texttt{GoHome} homes to the left limit on \texttt{IN\_1}, and X has nothing on
+\texttt{IN\_1}. Manual \S24: the motor ``will keep running until it hits the limit
+switch''. With no switch on that input there is no terminating condition, on the
+joint that rotates the whole arm. X can only be homed by a supervised search that
+watches \texttt{0x34} itself.
+\end{caution}
 
 Backing off measured the release edge: \texttt{IN\_2} let go
 \textbf{0.062\textdegree{}} after the trigger point. That is a narrow window ---
@@ -844,20 +869,84 @@ direction, or with no switch on the input being watched, has no natural stopping
 point. Prefer a supervised search in software, which also measures the distance
 and direction needed to configure \texttt{0x90} correctly afterwards.
 
-\subsection{Y: both limits read triggered at rest --- unresolved}
-Y reports \texttt{0x0C}: both \texttt{IN\_1} and \texttt{IN\_2} low. That cannot
+\subsection{Y: both limits read triggered at rest --- reversed connectors}
+Y reported \texttt{0x0C}: both \texttt{IN\_1} and \texttt{IN\_2} low. That cannot
 be physically true of endstops at opposite ends of travel, and with
-\texttt{EndLimit} enabled it fences Y in from both directions at once.
+\texttt{EndLimit} enabled it fenced Y in from both directions at once.
 
-The useful comparison is X, the same board type, whose \emph{unwired} inputs read
-\textbf{high} (\texttt{0x0F}). So Y's inputs reading low is not simply ``nothing
-connected'' --- something is holding them down. Either the sensors idle low and
-assert high, inverted from C's, in which case Y needs \texttt{Hm\_Trig = High};
-or there is a wiring fault. A magnet pass separates the two.
+The diagnosis came from comparing against X, the same board type, whose
+\emph{unwired} inputs read \textbf{high} (\texttt{0x0F}). Y's inputs reading low
+therefore was not ``nothing connected'' --- something was holding them down.
 
-Y's usable travel is narrow, about $\pm20$\textdegree{}, so its search bounds must
-be set accordingly --- the 30\textdegree{} and 180\textdegree{} sweeps used on X
-are not safe here.
+\textbf{The connectors were plugged in reversed.} The KY-003 is a three-pin module
+--- \texttt{Signal} / \texttt{+V} / \texttt{GND} --- with \texttt{+V} in the
+middle. Reversing a three-pin plug leaves the middle pin in place and swaps the
+outer two, so \texttt{+V} still reached \texttt{EVCC} while \texttt{Signal} and
+\texttt{GND} traded places. The driver's input ended up strapped directly to the
+module's ground, holding it low forever, and the sensor stayed powered with its
+LED lit --- which is why it looked alive while telling the driver nothing.
+
+Flipping the first connector moved the byte from \texttt{0x0C} to \texttt{0x0D}
+immediately; flipping the second gave \texttt{0x0F}, matching X. No setting
+changed, and nothing was damaged: an open-collector output tied to ground is what
+it does when triggered anyway.
+
+\begin{caution}{A lit sensor LED does not mean the driver can see it}
+The LED follows the sensor's own output. It says the sensor is powered and
+detecting; it says nothing about whether that signal reaches the driver's input
+pin. Watching the LED and the \texttt{0x34} bit \emph{together} is what localises
+a fault to the wire between them --- agreement means the path is good,
+disagreement points straight at the cable.
+\end{caution}
+
+\subsection{Y's verified sensor mapping}
+With both connectors corrected, a magnet at each sensor in turn:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Input} & \textbf{Bit} & \textbf{Sensor} \\ \midrule
+\texttt{IN\_1} & 0 & counter-clockwise end \\
+\texttt{IN\_2} & 1 & clockwise end \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Both active low, so the default \texttt{Hm\_Trig = Low} is correct, and since
+\texttt{GoHome} homes to \texttt{IN\_1}, \textbf{Y homes counter-clockwise}. This
+is the convention that later exonerated X's wiring.
+
+\subsection{The Y endstop searches were invalid: the gears were slipping}
+Roughly 150\textdegree{} of apparent joint travel was swept across a dozen bounded
+searches, in both directions, without a single endstop trigger --- while the
+sensors were confirmed good by hand and the magnets confirmed mounted. A long and
+increasingly elaborate argument was built about search direction and sensor
+geometry. All of it was wrong.
+
+\textbf{The cycloidal gears were slipping.} The joint was being run to find the
+point at which those gears could hold the arm's weight, and they were not holding
+it. The motor turned exactly as commanded; the arm did not follow.
+
+\begin{caution}{The encoder is upstream of the reduction and cannot see slip}
+\texttt{READ\_ENCODER} sits on the motor shaft. With the gears slipping it
+reported smooth, linear, perfectly tracked travel --- delivered counts matching
+commanded to a fraction of a percent --- for an output that was going nowhere.
+
+The absence of a stall is not reassurance either. Slipping gears \emph{unload} the
+motor, so it spins freely and every stall, torque and position-error heuristic
+stays quiet. The telemetry looks its best precisely when the drivetrain has
+stopped transmitting.
+
+So no motion result on this arm means anything without an observation of the
+output: an endstop trip, a physical reference, or somebody watching. ``Commanded
+distance matched delivered counts'' is evidence about the motor alone. This is the
+same error as reading one motor's encoder on the B/C differential wrist and
+calling it end-effector motion (Section~\ref{sec:session-2026-09-03}).
+\end{caution}
+
+None of the Y search distances in this entry should be read as arm positions.
+The sensor mapping above stands --- it was established by hand with a magnet, not
+by moving the joint.
 
 \newpage
 \appendix
