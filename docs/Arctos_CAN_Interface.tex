@@ -324,7 +324,11 @@ time, including for the emergency stop.
 \texttt{READ\_ERROR}        & \texttt{0x39} & Signed 32-bit deficit. Grows when stalled. \\
 \texttt{READ\_ENABLE\_STATE} & \texttt{0x3A} & \texttt{01} enabled, \texttt{00} disabled. Verified. \\
 \texttt{READ\_SHAFT\_PROTECTION} & \texttt{0x3E} & \texttt{00} clear. Non-zero latches the driver. \\
+\texttt{READ\_IO}             & \texttt{0x34} & Input and output pin states. Verified. Section~\ref{sec:endstops}. \\
 \texttt{SET\_WORKING\_MODE} & \texttt{0x82} & See the panel caution. \\
+\texttt{SET\_HOME\_PARAMS}   & \texttt{0x90} & Trigger level, direction, speed, \texttt{EndLimit}. \\
+\texttt{GO\_HOME}            & \texttt{0x91} & Runs onto the limit. \textbf{Unlocks the shaft} if \texttt{EndLimit=1}. \\
+\texttt{LIMIT\_PORT\_REMAP}  & \texttt{0x9E} & \textbf{Required for 42D endstops here.} No read-back. \\
 \texttt{ENABLE\_SHAFT\_PROTECTION} & \texttt{0x88} & \textbf{Avoid.} False positives, and it latches. \\
 \texttt{ENABLE\_MOTOR}      & \texttt{0xF3} & \texttt{01} enable, \texttt{00} disable. Verified. \\
 \texttt{RELATIVE\_POSITION} & \texttt{0xF4} & Unsafe packing. See the motion section. \\
@@ -520,6 +524,107 @@ Do not use any of them.
 Use only the formula above.
 \end{caution}
 
+\section{Endstops and homing}
+\label{sec:endstops}
+
+\subsection{Where the sensor actually connects}
+There are two wiring schemes and they are mutually exclusive. The vendor default
+puts a limit switch on \texttt{EVCC}, \texttt{EGND} and \texttt{IN\_1}, all on the
+same green terminal block as the CAN pair --- top to bottom, that block is
+\texttt{5V}, \texttt{GND}, \texttt{IN}, \texttt{CAN\_H}, \texttt{CAN\_L}. The
+silkscreen is split, \texttt{5V/GND/IN} printed above the block and \texttt{CAN H L}
+below it, which is easy to misread if you only look at one end.
+
+\textbf{This build does not use that scheme.} It follows the Arctos documentation,
+which for the 42D axes enables \emph{limit port remap} and moves the limits to the
+opposite connector: left limit to \texttt{En}, right limit to \texttt{Dir}, with
+\texttt{Com} tied to the matching high level. \texttt{En} and \texttt{Dir} are
+opto-isolated, so with \texttt{Com} floating they register nothing at all.
+
+\begin{caution}{The 42D has no \texttt{IN\_2}, which is why the remap exists}
+Per the vendor manual's IO table, \texttt{IN\_1} (home / left limit) is present on
+both 57D and 42D, but \texttt{IN\_2} (right limit) is 57D only. Remapping is how a
+42D gets a second endstop. On a 57D the remap is optional, since that board has a
+real \texttt{IN\_2}.
+\end{caution}
+
+\begin{caution}{No DIP switch is involved on the 42D}
+The \texttt{SW1} pin-2 instruction that circulates for these boards belongs to the
+57D. On the 42D, \texttt{EVCC}/\texttt{EGND} is the board's own 5\,V, rated 20\,mA
+--- the whole budget for the sensor and its indicator LEDs.
+\end{caution}
+
+\subsection{Enabling the remap}
+\begin{lstlisting}
+# LIMIT_PORT_REMAP (0x9E), enable = 01, CAN ID 0x06
+# checksum 0x06 + 0x9E + 0x01 = 0xA5
+cansend can0 006#9E01A5
+# reply 9E 01 A5 -> status 1, set success
+\end{lstlisting}
+
+The manual documents \texttt{0x9E} as a write only. \textbf{Nothing reports whether
+remap is currently on}, so it cannot be queried --- only set. Two further conditions
+must hold or it does nothing useful: the driver must be in a serial
+(\texttt{SR\_}) work mode, because in any \texttt{CR\_} mode \texttt{En} and
+\texttt{Dir} are the pulse interface's own enable and direction inputs; and
+\texttt{Com} must be wired.
+
+\subsection{Reading the pins: \texttt{0x34}}
+The reply is \texttt{[0x34][status][checksum]}. The status byte:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Bit} & \textbf{Pin} & \textbf{After remap, reports} \\ \midrule
+bit 0 & \texttt{IN\_1} & the \texttt{En} pin \\
+bit 1 & \texttt{IN\_2} & the \texttt{Dir} pin \\
+bit 2 & \texttt{OUT\_1} & stall indication, 57D only \\
+bit 3 & \texttt{OUT\_2} & reserved, 57D only \\
+bits 4--7 & \multicolumn{2}{l}{reserved} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Reading \texttt{0x34} does \emph{not} require \texttt{EndLimit}; that setting only
+governs whether the driver acts on a limit. Measured on Joint C with a dual-output
+hall sensor, one output per magnet pole:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Byte} & \textbf{Meaning} & \\ \midrule
+\texttt{0x03} & both idle & resting state \\
+\texttt{0x02} & bit 0 low & north pole on \texttt{En} \\
+\texttt{0x01} & bit 1 low & south pole on \texttt{Dir} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Both are \textbf{active low}, so the default \texttt{Hm\_Trig = Low} is correct and
+needs no change.
+
+\begin{caution}{A resting \texttt{0x01} before remap looks identical to a dead sensor}
+Without the remap, bit 0 reports the physical \texttt{IN\_1} terminal. On this build
+that terminal is deliberately empty, so it idles high forever regardless of the
+magnet. Two sessions and two different sensors were spent on this before the cause
+was found. If an endstop reads nothing, re-send \texttt{9E 01} before suspecting the
+wiring.
+\end{caution}
+
+\subsection{Homing}
+\texttt{SET\_HOME\_PARAMS (0x90)} carries \texttt{homeTrig} (0 low, 1 high),
+\texttt{homeDir} (0 CW, 1 CCW), a 16-bit \texttt{homeSpeed} in rpm, and
+\texttt{EndLimit} (0 disable, 1 enable). \texttt{GO\_HOME (0x91)} answers
+\texttt{0} fail, \texttt{1} started, \texttt{2} complete. The manual requires a
+\texttt{GoHome} after enabling \texttt{EndLimit} or changing any limit parameter.
+
+\begin{caution}{\texttt{EndLimit=1} unlocks the shaft at the left limit}
+The manual is explicit: when \texttt{EndLimit} is enabled and a \texttt{GoHome}
+reaches the left limit switch, the driver \textbf{unlocks the shaft}. On a belted,
+gravity-loaded joint that is a drop. Test with the belt off. Set
+\texttt{EndLimit=0} if the axis must stay locked after homing.
+\end{caution}
+
 \section{Safety}
 \label{sec:safety}
 
@@ -629,6 +734,20 @@ explicit safety band.
 \texttt{joint\_position\_control\_test.py} &
   Stepped position moves with retry. Superseded by the unstick variants for a
   suspect mesh. \\
+\texttt{joint\_endstop\_test.py} &
+  Read-only live monitor of the \texttt{0x34} byte. Sends nothing else, so it is safe
+  on an assembled arm. Prints only when the byte changes. \\
+\texttt{joint\_endstop\_dwell.py} &
+  Timestamps every endstop edge and reports how long each trigger held, with a
+  solid/chatter/marginal verdict. Use it when the monitor above shows a trigger but
+  you need to know whether it is stable; that script has no timestamps, so a 50\,ms
+  tap and a two-second hold look identical there. \\
+\texttt{joint\_io\_diff.py} &
+  Sweeps every documented read-only register with the magnet away and then held on,
+  reporting any byte that differs. For when an endstop does not appear on
+  \texttt{0x34} at all. \\
+\texttt{joint\_magnet\_probe.py} &
+  Checks whether an external magnet disturbs the encoder reading. \\
 \bottomrule
 \end{longtable}
 

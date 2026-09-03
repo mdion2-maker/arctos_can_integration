@@ -112,7 +112,7 @@ CAN Rate & \texttt{500} \\
 CAN Response, shown as CANRSP & \texttt{ENABLE} \\
 CAN CRC & \texttt{SUM-8} \\
 Working current & 1.2~A or below, the NEMA 17's rating \\
-Working mode & note what it is set to \\
+Working mode & \texttt{SR\_vFOC} --- see the caution below \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -125,12 +125,30 @@ A controller in this project was found storing a 3000~mA default against a motor
 rated 1.2~A, roughly two and a half times over. Check this on every new controller.
 \end{caution}
 
-\begin{caution}{A working-mode mismatch imitates a communication fault}
-If the panel's working mode disagrees with what a motion command assumes, the
-controller will accept a frame and acknowledge its checksum without turning the
-shaft. Confirm the mode before concluding that a ``no motion'' result is a wiring or
-CAN problem.
+\begin{caution}{Set the working mode to \texttt{SR\_vFOC}, not a \texttt{CR\_} mode}
+The controller ships in \texttt{CR\_vFOC}. The \texttt{CR\_} modes drive the motor from
+the physical pulse interface (\texttt{STP}/\texttt{DIR}/\texttt{En}); the \texttt{SR\_}
+modes drive it from serial and CAN commands, which is how this arm is controlled.
+\texttt{arctos\_interface.cpp}'s \texttt{setupMotorParameters()} sends
+\texttt{SET\_WORKING\_MODE (0x82)} with \texttt{SR\_vFOC} (value 5) to every joint, so
+the panel should agree with the stack rather than be left on the factory default.
+
+Two things go wrong otherwise. A mode mismatch \textbf{imitates a communication fault}:
+the controller accepts a frame and acknowledges its checksum without turning the shaft,
+so a ``no motion'' result looks like wiring or CAN when it is neither. And \textbf{endstops
+cannot work in a \texttt{CR\_} mode} on this build --- limit port remap puts the limits on
+\texttt{En} and \texttt{Dir}, which in a \texttt{CR\_} mode are the pulse interface's own
+enable and direction inputs. The vendor manual restricts the remap to serial control mode
+for exactly that reason.
 \end{caution}
+
+The mode can also be set over CAN rather than on the panel:
+
+\begin{lstlisting}
+# SET_WORKING_MODE (0x82) = SR_vFOC (5), CAN ID 0x06
+# checksum 0x06 + 0x82 + 0x05 = 0x8D
+cansend can0 006#82058D
+\end{lstlisting}
 \passif{Settings survive the power cycle.}
 
 \section*{Step 2 --- Bring up the CAN interface}
@@ -365,6 +383,38 @@ Speed limit       & measured and written down \\
     \item \textbf{Never enable shaft protection} (\texttt{0x88}). It has a history of
           false positives and latches the driver.
 \end{itemize}
+
+\section*{Endstops --- wiring and verification}
+
+Only if this joint has hall endstops fitted. The 42D has one limit input by default
+and this build uses two, so it needs limit port remap.
+
+Wire the sensor's supply to \texttt{EVCC}/\texttt{EGND} (the \texttt{5V} and
+\texttt{GND} terminals on the CAN-side block, 5\,V at 20\,mA), the two outputs to
+\texttt{En} and \texttt{Dir} on the opposite block, and \texttt{Com} to 5\,V. Then
+enable the remap:
+
+\begin{lstlisting}
+cansend can0 006#9E01A5
+\end{lstlisting}
+
+Watch the pins while passing a magnet, with the joint stationary:
+
+\begin{lstlisting}
+python3 joint_endstop_test.py --can-id 0x06
+\end{lstlisting}
+
+\passif{Resting byte \texttt{0x03}; one pole drops it to \texttt{0x02}, the other to
+\texttt{0x01}, and it returns to \texttt{0x03} between passes.}
+\failif{Nothing moves. Check \texttt{Com} is wired, the work mode is
+\texttt{SR\_vFOC}, and that the remap command was actually sent --- it has no
+read-back, so it cannot be confirmed by query.}
+
+\begin{caution}{A parked magnet chatters}
+A magnet left at the edge of the sensor's range oscillates across its threshold. Use
+\texttt{joint\_endstop\_dwell.py} to confirm a deliberate hold registers as one clean
+event before relying on the limit; adjust sensor position before fitting the belt.
+\end{caution}
 
 \section*{Step 12 --- Shutdown}
 

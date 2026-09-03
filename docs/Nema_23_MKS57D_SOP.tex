@@ -139,6 +139,7 @@ CAN Rate & \texttt{500} \\
 CAN Response, shown as CANRSP & \texttt{ENABLE} \\
 CAN CRC & \texttt{SUM-8} \\
 Working current & 2.8~A or below, the NEMA 23's rating \\
+Working mode & \texttt{SR\_vFOC} --- see the caution below \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -149,6 +150,29 @@ Power-cycle after saving.
 A 42D in this project was found storing 3000~mA against a 1.2~A motor. On a 2.8~A
 NEMA 23 the consequences of an over-set current are correspondingly larger.
 \end{caution}
+
+\begin{caution}{Set the working mode to \texttt{SR\_vFOC}, not a \texttt{CR\_} mode}
+Carried over from the 42D procedure and \textbf{not yet confirmed on 57D hardware}, like
+the rest of this step. The controller ships in \texttt{CR\_vFOC}. The \texttt{CR\_} modes
+drive the motor from the physical pulse interface (\texttt{STP}/\texttt{DIR}/\texttt{En});
+the \texttt{SR\_} modes drive it from serial and CAN commands, which is how this arm is
+controlled. \texttt{arctos\_interface.cpp}'s \texttt{setupMotorParameters()} sends
+\texttt{SET\_WORKING\_MODE (0x82)} with \texttt{SR\_vFOC} (value 5) to every joint.
+
+A mode mismatch \textbf{imitates a communication fault}: the controller accepts a frame and
+acknowledges its checksum without turning the shaft, so a ``no motion'' result looks like
+wiring or CAN. Note also that unlike the 42D, the 57D has a real \texttt{IN\_2} input and so
+does not need limit port remap to get a second endstop --- but if remap is used anyway, the
+same serial-mode restriction applies.
+\end{caution}
+
+The mode can also be set over CAN rather than on the panel:
+
+\begin{lstlisting}
+# SET_WORKING_MODE (0x82) = SR_vFOC (5), CAN ID 0x01
+# checksum 0x01 + 0x82 + 0x05 = 0x88
+cansend can0 001#820588
+\end{lstlisting}
 
 \passif{Settings survive a power cycle.}
 \failif{If the menu differs from the above, record what it actually offers and update

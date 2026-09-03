@@ -231,6 +231,7 @@ Velocity           & \texttt{0x32} & zero \\
 Position error     & \texttt{0x39} & small, tens of counts \\
 Enable state       & \texttt{0x3A} & \texttt{01} enabled, \texttt{00} disabled \\
 Shaft protection   & \texttt{0x3E} & \texttt{00} \\
+IO / endstop pins  & \texttt{0x34} & \texttt{0x03} both idle on a remapped 42D \\
 Liveness           & \texttt{0xF1} & answers \texttt{F1 01} \\
 \bottomrule
 \end{tabular}
@@ -248,6 +249,29 @@ The reply is \texttt{[0x31][6 bytes signed position][checksum]}, big-endian, on 
 \begin{lstlisting}
 joint_degrees = raw48 * 360.0 / 16384 / gear_ratio
 \end{lstlisting}
+
+\section{Endstops}
+
+Read the endstop pins on \texttt{0x06}:
+
+\begin{lstlisting}
+cansend can0 006#343A
+\end{lstlisting}
+
+The reply is \texttt{[0x34][status][checksum]}. Bit 0 is \texttt{IN\_1}, bit 1 is
+\texttt{IN\_2}; both are active low, so a bit reading \texttt{0} is triggered.
+
+On the 42D axes of this arm the endstops are wired to \texttt{En} and \texttt{Dir}
+rather than \texttt{IN\_1}, which only works once limit port remap is enabled:
+
+\begin{lstlisting}
+cansend can0 006#9E01A5
+\end{lstlisting}
+
+That is a write, and there is no command to read the setting back. Without it, bit 0
+reports the empty \texttt{IN\_1} terminal and sits at \texttt{0x01} no matter what
+the magnet does. If an endstop reads nothing, send this before suspecting wiring.
+See the endstop section of \texttt{Arctos\_CAN\_Interface} for the full picture.
 
 \section{Scan for what is actually on the bus}
 
