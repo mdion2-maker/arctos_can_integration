@@ -687,34 +687,53 @@ briefly corrupted a reading during this session. Run one poller at a time until
 the older scripts are tightened.
 \end{caution}
 
-\subsection{Direction byte mapping, confirmed by eye}
+\subsection{Direction byte mapping --- at the motor, not the end effector}
 Measured after the motor had cooled and the driver had been power-cycled, using a
-slow 5\textdegree{} move at speed~5 in each direction with the rotation watched at
-the joint itself:
+slow 5\textdegree{} move at speed~5 in each direction:
 
 \begin{center}
 \begin{tabular}{lll}
 \toprule
-\textbf{Direction byte} & \textbf{Encoder} & \textbf{Physical rotation} \\ \midrule
+\textbf{Direction byte} & \textbf{Encoder} & \textbf{Motor C rotation} \\ \midrule
 \texttt{0x00} & counts up   & counter-clockwise \\
-\texttt{0x80} & counts down & \textbf{clockwise} \\
+\texttt{0x80} & counts down & clockwise \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\textbf{Clockwise is \texttt{0x80}.} Note that the 4\textdegree{} and
-25\textdegree{} runs recorded above used \texttt{0x00} for their first leg, so they
-travelled \emph{counter-clockwise} first, not clockwise --- the encoder sign alone
-had been taken as ``forward'' without anyone checking the joint.
+Motion was smooth and linear, about 700 counts per half-second with no roughness,
+and both legs settled at exactly $\pm5.005$\textdegree{}: 15448 counts out against
+15447 back.
 
-Motion at speed~5 was smooth and linear, about 700 counts per half-second with no
-roughness, and both legs settled at exactly $\pm5.005$\textdegree{}: 15448 counts
-out against 15447 back, a one-count difference.
+The 4\textdegree{} and 25\textdegree{} runs earlier in this entry used \texttt{0x00}
+for their first leg, so motor C turned counter-clockwise first, not clockwise as
+those runs were requested.
 
-\begin{caution}{The vantage point was not recorded}
-``Clockwise'' for a wrist joint depends on which side it is viewed from, and the
-observer's position was not written down at the time. Before this mapping is relied
-on for anything that matters, confirm it again and record the vantage with it.
+\begin{caution}{This says nothing about which way the end effector went}
+Joints B and C are a \textbf{differential wrist}: the two motors act together on the
+end effector, one degree of freedom from co-rotating them and the other from
+counter-rotating them. \texttt{motor\_driver.cpp}'s \texttt{setJointPosition()}
+encodes exactly this in a commented-out branch guarded by
+\texttt{joint\_name == "C\_joint"}, which computes
+\texttt{motor\_c\_position = position * gear\_ratio} and then
+\texttt{motor\_b\_position = -motor\_c\_position}, sending both to CAN IDs 6 and 5.
+
+So the table above is a property of \emph{motor C's shaft}, not of the gripper.
+Three reasons it cannot be read as an end-effector direction:
+\begin{itemize}
+    \item \texttt{READ\_ENCODER} sits on the motor shaft. It reports the motor
+    turning through its own gearbox, and the drivetrain may reverse the sense
+    between motor and output.
+    \item Driving one half of a differential alone produces a \emph{blend} of both
+    wrist degrees of freedom, not a pure rotation about either.
+    \item \textbf{Motor B was not powered during this test} --- it did not answer
+    the CAN scan at all, at any ID. With its coils off it is free to back-drive, so
+    the reaction may have turned the idle motor rather than moving the output.
+\end{itemize}
+
+To establish end-effector direction, both motors have to be on the bus and
+commanded together: co-rotated for one axis, counter-rotated for the other. Until
+then, treat ``clockwise'' as describing motor C only.
 \end{caution}
 
 \subsection{Next steps}
