@@ -245,6 +245,12 @@ def main():
         print(f"Final position: {final_deg:.4f} deg (started {deg0:.4f}, net change {final_deg-deg0:+.4f})")
 
     finally:
+        # Disabling the coils does NOT cancel an in-flight 0xFD move -- the move
+        # runs on to completion after this script exits. Measured on Joint X,
+        # 2026-09-03: a 5 deg move cut off at 0.5 deg finished the remaining 4.5 deg
+        # with no script running. Only EMERGENCY_STOP actually stops it.
+        send_frame(bus, args.can_id, [0xF7])
+        time.sleep(0.1)
         print("\nDisabling motor coils.")
         send_frame(bus, args.can_id, [ENABLE_MOTOR, 0x00])
         bus.shutdown()

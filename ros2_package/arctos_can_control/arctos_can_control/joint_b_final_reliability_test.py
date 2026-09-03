@@ -87,6 +87,12 @@ def main():
         print(f"  Net Repeatability Drift Error: {abs(end_enc - start_enc)} raw counts.")
 
     finally:
+        # Disabling the coils does NOT cancel an in-flight 0xFD move -- the move
+        # runs on to completion after this script exits. Measured on Joint X,
+        # 2026-09-03: a 5 deg move cut off at 0.5 deg finished the remaining 4.5 deg
+        # with no script running. Only EMERGENCY_STOP actually stops it.
+        send_frame(bus, CAN_ID, [0xF7])
+        time.sleep(0.1)
         print("\nSafety lockdown: Disabling motor power.")
         send_frame(bus, CAN_ID, [0xF3, 0x00])
         bus.shutdown()

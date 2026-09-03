@@ -320,6 +320,12 @@ def main():
             best = max((r[1] or 0) for r in rows)
             print(f"    highest rpm observed: {best:.1f}")
     finally:
+        # Disabling the coils does NOT cancel an in-flight 0xFD move -- the move
+        # runs on to completion after this script exits. Measured on Joint X,
+        # 2026-09-03: a 5 deg move cut off at 0.5 deg finished the remaining 4.5 deg
+        # with no script running. Only EMERGENCY_STOP actually stops it.
+        send_frame(bus, args.can_id, [0xF7])
+        time.sleep(0.1)
         state = 0x01 if args.leave_coils == "on" else 0x00
         send_frame(bus, args.can_id, [ENABLE_MOTOR, state])
         print(f"    coils left {'ENABLED' if state else 'DISABLED'}")

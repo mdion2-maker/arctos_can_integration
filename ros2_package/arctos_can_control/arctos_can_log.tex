@@ -750,6 +750,115 @@ then, treat ``clockwise'' as describing motor C only.
 \end{itemize}
 
 
+\section{2026-09-03 (continued) --- Joints X and Y onto the bus}
+\label{sec:session-2026-09-03-xy}
+X and Y were wired up and both answer CAN. Both are \texttt{MKS\_57D}, which
+changes the endstop picture from Joint C's.
+
+\subsection{X's driver is now the CAN variant}
+Earlier sessions concluded X's driver was the \textbf{RS485} variant with no CAN
+transceiver at all, which is why C became the test joint
+(Section~\ref{sec:troubleshoot-rs485}). That is no longer the case: X answers
+\texttt{0x01} on a plain scan. Whatever was installed there now speaks CAN, and X
+is a usable joint.
+
+\subsection{57D endstops need no remap --- but do need SW1}
+Unlike the 42D, the 57D has a real \texttt{IN\_2}, so \textbf{do not send
+\texttt{9E 01} to X or Y}. The vendor default wiring applies:
+\texttt{EVCC}/\texttt{EGND}/\texttt{IN\_1} on the left block. Reconciling the
+manual's \texttt{SW1} table with the Arctos instruction: pins \textbf{2 and 3
+together} select whether \texttt{EVCC}/\texttt{EGND} is fed from the board's own
+5\,V (ON) or externally at 3.3--24\,V (OFF), and \textbf{pin 1 is the CAN 120\,\(\Omega\)
+terminator} --- a separate decision, now that the bus has more nodes.
+
+\subsection{Motors were energised at power-on: the \texttt{En} setting}
+Both joints held torque as soon as they were powered. The cause is the \texttt{En}
+menu option, whose \texttt{Hold} setting means ``the driver board is always
+enabled''. \texttt{SET\_EN\_ACTIVE (0x85)} sets it over CAN:
+\texttt{00} active low (the factory default), \texttt{01} active high, \texttt{02}
+always on. Both X and Y were set to \texttt{00}, and CAN enable/disable still
+toggles correctly afterwards.
+
+\begin{caution}{Do not apply \texttt{0x85} blindly to Joint C}
+C has limit port remap enabled, so its \texttt{En} pin is a limit input rather
+than an enable. How the \texttt{En} active-level setting interacts there is
+undocumented and untested.
+\end{caution}
+
+\subsection{X motion: clean at 2\textdegree{} and 25\textdegree{}}
+Gear ratio 13.5, roughly five times coarser than C's 67.82 for the same pulse
+count. A 2\textdegree{} out-and-back returned to within 6 counts; a
+25\textdegree{} out-and-back delivered $-24.966$\textdegree{} and
+$+24.976$\textdegree{} against 15360 counts commanded, about 0.14\% short, smooth
+and linear throughout.
+
+\subsection{X direction: the byte is inverted relative to C}
+Confirmed visually: on X, \texttt{0x00} counts the encoder \emph{down} and turns
+the joint \textbf{clockwise}; \texttt{0x80} counts up and turns it
+counter-clockwise. On C the same bytes mean the opposite, so \textbf{direction
+bytes do not transfer between joints}.
+
+Both joints so far share one relationship worth testing further: the encoder
+counting \emph{down} corresponded to clockwise on each. If that holds on a third
+joint it is a far more useful rule than a byte per joint, since the encoder sign
+is readable over the bus. Two samples is not enough to rely on it.
+
+\subsection{X's endstop: found, but on the wrong input}
+A bounded search --- one slow move under continuous \texttt{0x34} polling, with
+\texttt{0xF7} sent the instant a bit dropped --- located a mounted sensor
+\textbf{112.05\textdegree{} clockwise} of the search start. Detection took 8294
+polls over 31\,s, about one sample every 0.013\textdegree{} of joint travel, and
+the stop was immediate.
+
+\textbf{It triggered \texttt{IN\_2}, not \texttt{IN\_1}.} \texttt{GoHome} homes to
+the \emph{left} limit on \texttt{IN\_1}, so as wired the driver's own homing will
+never see this switch. Either it is X's home switch on the wrong input and the
+signal wire should move to \texttt{IN\_1}, or it is genuinely the far limit and a
+second sensor exists counter-clockwise. Unresolved.
+
+Backing off measured the release edge: \texttt{IN\_2} let go
+\textbf{0.062\textdegree{}} after the trigger point. That is a narrow window ---
+approach speed and parked drift both matter.
+
+\begin{caution}{Disabling the coils does not cancel a move in flight}
+Measured directly. A 5\textdegree{} move whose supervising script exited at
+0.5\textdegree{} --- sending \texttt{ENABLE\_MOTOR 00} on the way out ---
+completed the remaining 4.5\textdegree{} with no script running at all. Coil
+disable is not a stop. \textbf{Only \texttt{EMERGENCY\_STOP (0xF7)} cancels an
+in-flight \texttt{0xFD}.}
+
+Every motion script in this package has been changed to send \texttt{0xF7} before
+the coil disable in its \texttt{finally} block, so ``the script finished'' now
+means the joint actually stopped. Any ``settled'' position recorded by an older
+version of these scripts, where the loop exited early rather than running to
+natural completion, should be treated as suspect.
+\end{caution}
+
+\subsection{No homing parameter can be read back}
+\texttt{0x90} is write-only. \texttt{Hm\_Trig}, \texttt{Hm\_Dir},
+\texttt{Hm\_Speed}, \texttt{Hm\_Mode} and \texttt{EndLimit} cannot be queried over
+CAN --- only set, or read on the panel. This matters because \texttt{Hm\_Dir}
+decides which way \texttt{GoHome} runs, and \S24 of the manual says the motor
+``will keep running until it hits the limit switch''. Homing in the wrong
+direction, or with no switch on the input being watched, has no natural stopping
+point. Prefer a supervised search in software, which also measures the distance
+and direction needed to configure \texttt{0x90} correctly afterwards.
+
+\subsection{Y: both limits read triggered at rest --- unresolved}
+Y reports \texttt{0x0C}: both \texttt{IN\_1} and \texttt{IN\_2} low. That cannot
+be physically true of endstops at opposite ends of travel, and with
+\texttt{EndLimit} enabled it fences Y in from both directions at once.
+
+The useful comparison is X, the same board type, whose \emph{unwired} inputs read
+\textbf{high} (\texttt{0x0F}). So Y's inputs reading low is not simply ``nothing
+connected'' --- something is holding them down. Either the sensors idle low and
+assert high, inverted from C's, in which case Y needs \texttt{Hm\_Trig = High};
+or there is a wiring fault. A magnet pass separates the two.
+
+Y's usable travel is narrow, about $\pm20$\textdegree{}, so its search bounds must
+be set accordingly --- the 30\textdegree{} and 180\textdegree{} sweeps used on X
+are not safe here.
+
 \newpage
 \appendix
 \section*{Appendices --- standing reference}
