@@ -47,15 +47,670 @@
     tabsize=2
 }
 
-\title{Standard Operating Procedure (SOP): \\ Arctos Robotic Arm CAN Bus \& ROS 2 Integration}
-\author{Robotics Engineering Laboratory Guide}
-\date{August 2026}
+\title{Arctos Robotic Arm CAN Bus \& ROS~2 Integration \\ \large Engineering Log}
+\author{Bench log --- Arctos CAN integration}
+\date{Last updated 2026-09-03}
 
 \begin{document}
 
 \maketitle
 \tableofcontents
 \newpage
+
+\section*{About this log}
+\addcontentsline{toc}{section}{About this log}
+This document is a running \textbf{engineering log} of bringing the Arctos arm up
+on CAN and ROS~2. It is not a standard operating procedure, and it should not be
+read as one: entries record what was tried on a given day, what the hardware
+actually did, and what was concluded --- including the conclusions that later
+turned out to be wrong. Several entries exist specifically to stop a future
+session repeating a dead end, so a superseded finding is left in place with a
+note pointing at the entry that overturned it, rather than being deleted.
+
+Entries appear in chronological order. Dates are given where the original entry
+recorded one; a few early entries did not, and no date has been invented for
+them.
+
+The stable, procedural material --- network bring-up, the joint/CAN-ID map,
+protocol errata, the per-joint bring-up steps and the Python stack --- has been
+moved to the appendices, where it can be looked up without reading the history.
+The four reference documents in \texttt{docs/} (\texttt{Arctos\_CAN\_Interface},
+\texttt{BASIC\_CAN\_COMMANDS}, \texttt{Nema\_17\_MKS42D\_SOP} and
+\texttt{Nema\_23\_MKS57D\_SOP}) hold the fuller reference treatment.
+
+\begin{caution}{Read the newest entry on a joint before trusting an older one}
+This log contains findings that were later disproved. Joint C in particular was
+recorded on 2026-08-25 as having a fault ``no CAN command can fix''; the
+2026-09-03 entry shows that joint driving its load correctly. Always search
+forward for the most recent entry naming the joint you are working on.
+\end{caution}
+
+\newpage
+
+\section{2026-08-25 --- Joint C bring-up attempt: no holding torque}
+\label{sec:session-2026-08-25}
+Picking this up again: Joint C is wired, powered, and communicating over CAN, but \textbf{does not produce holding torque under any configuration tried today}. This section records exactly what was tried and ruled out, so the next session doesn't repeat it.
+
+\subsection{Confirmed working}
+\begin{itemize}
+    \item CAN link is solid: Step 2's reliability test passed cleanly (100\% response rate, 0 checksum failures, 0 encoder jitter across 200 samples).
+    \item CAN termination jumper near the CAN\_H/CAN\_L terminals was confirmed present and left installed -- correct, since this driver is currently one of only two nodes on the bus (CANable and this driver).
+    \item Main motor power measured at 24.9\,V DC at the driver -- normal and expected for this driver family (not the 249.6\,V initially misreported).
+    \item All four motor phase wires confirmed firmly seated; the driver-to-motor connector was additionally unplugged and re-seated mid-session. Neither changed the outcome.
+    \item The joint was reportedly calibrated previously. Calibration (\texttt{0x80 CALIBRATE}) was \textbf{not} re-run today because the motor is currently coupled to its gear train and cannot be decoupled right now -- \texttt{motor\_driver.cpp} explicitly warns calibration should be done unloaded, so re-running it under load was judged higher-risk than leaving it as-is.
+\end{itemize}
+
+\subsection{CAN ID: moved during the session -- always re-scan, never assume}
+\texttt{can\_id\_scan.py} first found Joint C responding at \texttt{0x01} (matching neither \texttt{arctos\_controller.yaml}'s \texttt{0x06} nor the older docs' \texttt{0x03}). Partway through the session the CAN ID was changed on the driver's own panel to \texttt{0x06}, confirmed again by re-scanning -- \textbf{do not assume either value going forward; run \texttt{can\_id\_scan.py} at the start of the next session before anything else.}
+
+\subsection{Ruled out: every CAN/panel-configurable setting tried so far}
+All of the following were tested (via direct CAN commands and/or the driver's own physical panel) with \textbf{no change in outcome} -- \texttt{READ\_ENABLE\_STATE (0x3A)} sometimes read back \texttt{1} (enabled) and sometimes \texttt{0} depending on mode, but in every single case the shaft span completely freely by hand with no detectable holding torque:
+\begin{itemize}
+    \item \textbf{Working mode}: \texttt{SR\_vFOC} (value 5, set both via \texttt{0x82} over CAN and later on the panel directly), \texttt{CR\_FOC}/\texttt{CR\_vFOC} (value 2, set on the panel), and \texttt{CR\_CLOSE} (value 1, set on the panel -- this is what Joint B's panel is documented to use).
+    \item \textbf{Working current}: the panel's stored default of 3000\,mA (roughly 2.5$\times$ this motor's documented 1.2\,A rating -- flagged and corrected), and 1200--1600\,mA (matching the documented rated current), both via \texttt{0x83} over CAN and via the panel.
+    \item \textbf{CAN ID}: \texttt{0x01} and \texttt{0x06} (see above).
+\end{itemize}
+\textbf{Important corroborating observation}: after several enable/hold cycles at up to 3000\,mA, \textbf{the motor showed no detectable warmth at all}. If current were actually reaching the coils, even without producing net rotation, resistive (I\textsuperscript{2}R) heating should be noticeable fairly quickly at that current. Its complete absence across every trial points away from a settings/calibration problem and toward an open or broken path between the driver's motor-output stage and the coils -- something no CAN command can fix.
+
+\subsection{Not yet tried / next session}
+\begin{itemize}
+    \item \textbf{Phase resistance check}: with power off, measure resistance across each of the two motor phase-wire pairs directly at the driver-to-motor connector (a healthy phase for this motor class should read roughly 1--5\,$\Omega$; open/infinite indicates a broken phase). Not done today -- no multimeter was available.
+    \item \textbf{Component swap test}: temporarily connect Joint B's known-working motor to Joint C's driver (or Joint C's motor to Joint B's driver) to isolate whether the fault is in the driver or in the motor/cable. Not attempted today.
+    \item \textbf{Live comparison against Joint B}: the written guide documents describing Joint B's setup (\texttt{arctos\_CAN\_ROS2\_SOP\_updated.tex}, the since-removed \texttt{arctos\_joint\_b\_guide.tex}, the cheat sheet) all still describe Joint B's own motion as unconfirmed as of Aug 19--20, even though Joint B has since been confirmed to move -- whatever actually fixed it isn't recorded in any document in this workspace. Check Joint B's driver's \emph{actual current} panel settings directly (working mode, current, CANRSP) and compare against whatever Joint C ends up needing, rather than trusting the stale written docs.
+    \item \texttt{SET\_ENABLE\_SETTINGS (0x85)} exists in \texttt{motor\_types.hpp} but its payload format is undocumented anywhere in this project and was deliberately not guessed at. If the panel exposes an equivalent enable-pin/enable-source setting, check it there instead.
+\end{itemize}
+
+\section{2026-08-27 --- Joint B diagnostics and large-move test}
+\label{sec:session-2026-08-27}
+Two days after the Joint C session above, Joint C's own troubleshooting was paused (multimeter phase-resistance check and driver/motor swap test still pending -- see Section~\ref{sec:session-2026-08-25}), and Joint B was connected and powered instead to use as a known-working reference.
+
+\subsection{Joint B: confirmed healthy, with real holding torque}
+\texttt{can\_id\_scan.py} confirmed Joint B at \texttt{0x05} (matching every document, unlike Joint C's repeated mismatches). \texttt{joint\_reliability\_test.py} came back clean: 100\% response rate, 0 checksum failures, 1 raw count of jitter (noise floor) across 200 samples. Critically, Joint B's coils were found already enabled (\texttt{coils\_enabled=True} before this session sent anything), and \textbf{the shaft genuinely resisted turning by hand} -- real holding torque, unlike every attempt on Joint C.
+
+\subsection{Joint B's verified-working panel configuration}
+There is no \texttt{READ\_WORKING\_MODE} or \texttt{READ\_CURRENT} opcode anywhere in \texttt{motor\_types.hpp} -- these can only be read from the driver's own physical panel, not queried over CAN. Read directly off Joint B's screen while it was confirmed holding torque:
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Setting} & \textbf{Joint B's verified-working value} \\ \midrule
+Working mode & \texttt{SR\_CLOSE} (enum value 4) \\
+Current & 1600\,mA (matches \texttt{motor\_types.hpp}'s own \texttt{working\_current\{1600\}} default exactly) \\
+CANRSP & Enable \\ \bottomrule
+\end{tabular}
+\caption{Joint B live-verified panel configuration, 2026-08-27.}
+\end{table}
+\textbf{This is a new working mode not yet tried on Joint C} -- Joint C testing on 2026-08-25 covered \texttt{SR\_vFOC} (5), \texttt{CR\_vFOC}/\texttt{CR\_FOC} (2), and \texttt{CR\_CLOSE} (1), but not \texttt{SR\_CLOSE} (4). Next Joint C session: set \texttt{SR\_CLOSE} + 1600\,mA + confirm CANRSP=Enable, then re-run the hold-enable test.
+
+\subsection{20-degree monitored move test on Joint B: real motion, but not reliably reproducible per-command}
+With Joint B confirmed healthy, a user-requested $\sim$20\textdegree{} joint move was run as 5 monitored steps of 4\textdegree{} each (Section~\ref{sec:errata}'s absolute-vs-relative ambiguity for \texttt{0xF5} was never resolved, so the incremental approach from Section~\ref{sec:safe-test} was used rather than a single blind large command). Starting position was $\approx 0.00\textdegree{}$, well inside the calibrated envelope (\texttt{home\_position}=$+12.87\textdegree{}$, \texttt{opposite\_limit}=$-24.23\textdegree{}$ per \texttt{arctos\_controller.yaml}).
+
+\textbf{Result: Step 1 produced real motion in the wrong direction and wrong magnitude} (commanded $+4\textdegree{}$, actual $-1.84\textdegree{}$), after which \textbf{Steps 2--5 produced essentially no further motion} (each $<0.001\textdegree{}$) despite each commanding a distinct new absolute target. No protection/stall flag was ever set; final position ($-1.85\textdegree{}$) stayed safely inside the envelope. The incremental/monitored design caught this after a small, safe excursion rather than after a blind full-magnitude commit.
+
+A follow-up test re-sent \texttt{ENABLE\_MOTOR} immediately before every \texttt{0xF5} and added a 3-second pause between steps, using smaller $2\textdegree{}$ steps. \textbf{This produced real motion of very close to the commanded magnitude on 2 of 3 steps} (Step 1: commanded $+2.0\textdegree{}$, actual $+1.96\textdegree{}$; Step 3: commanded $+2.0\textdegree{}$, actual $+1.96\textdegree{}$) -- a clear improvement over the first attempt, where only the very first command after enabling produced any real motion at all. \textbf{But Step 2 landed nowhere near its own commanded target}, instead landing within $\sim$13 raw counts of where the joint had been \emph{two steps earlier} -- even though the transmitted frame's position bytes were verified correct and distinct from the other two steps. This is not a simple sign-flip or absolute-vs-relative confusion; it looks like a command-queuing or timing race between consecutive \texttt{0xF5} frames, where a stale target sometimes wins over the freshly-sent one.
+
+\begin{caution}{Do not trust a single \texttt{0xF5} command's outcome without reading the encoder back}
+Across both tests today, magnitude and direction were unpredictable often enough (3 of 8 total commanded steps across both runs landed far from their target) that \textbf{every \texttt{0xF5} command must be followed by an encoder read to confirm where the joint actually ended up} before commanding anything further, exactly as the incremental procedure in Section~\ref{sec:safe-test} already does. No error or shaft-protection flag was set during any of these mismatches -- the driver does not flag this condition on its own.
+\end{caution}
+
+\subsection{\texttt{RELATIVE\_POSITION (0xF4)}: a single move matched commanded magnitude almost exactly}
+A single \texttt{0xF4} command (delta $+6173$ raw counts, $\approx 2.0^\circ$) produced $-1.98^\circ$ of real motion -- magnitude within 1\% of commanded, direction flipped as expected from \texttt{B\_joint}'s \texttt{inverted: true} flag (these raw test scripts deliberately do not apply that flip themselves; see the caution in Section~\ref{sec:joint-bringup}'s tiny-move script). This was the cleanest single-command result of the entire session.
+
+\textbf{But 3 consecutive \texttt{0xF4} commands (same delta, sent with only a single upfront \texttt{ENABLE\_MOTOR}), run twice, produced almost no motion on any of the 3 steps both times} ($<0.04^\circ$ per step) -- reproducing the same partial-execution pattern seen with \texttt{0xF5}, just now confirmed on \texttt{0xF4} too. This is not an absolute-vs-relative distinction; both commands show the same symptom.
+
+\subsection{\texttt{candump} capture: the driver genuinely acknowledges "movement started" -- but barely moves}
+A full unfiltered \texttt{candump -tz can0} capture during a 3-step \texttt{0xF4} sequence resolved an open question: is our own polling code silently discarding relevant frames? No. Every \texttt{F4 00 32 0A 00 18 1D 6A} command received a real, checksummed \texttt{F4 01 FA} response -- decoding \texttt{status=1} against \texttt{motor\_driver.cpp}'s own convention for \texttt{ABSOLUTE\_POSITION} (\texttt{case 1: // Movement started}), \textbf{the driver is telling us, correctly, that it started moving, every single time}. No other frames were ever sent besides our own read requests and this one ack. Meanwhile the raw encoder value crept by only $\sim$115 counts total across all three commands (each requesting 6173) -- roughly 2\% of one single step.
+
+\subsection{90-second and 60-second single-command watches: a genuine two-phase profile, not "just slow"}
+Watching a single \texttt{0xF4} command for much longer than the $\sim$5s used everywhere else in this project revealed the real shape of the response: a \textbf{real, fast burst} of motion in the first few seconds ($-737$ counts/s at \texttt{speed=50,accel=10}; $-428$ counts/s at a much gentler \texttt{speed=15,accel=1}), covering the large majority of whatever motion occurs, followed immediately by an \textbf{effective stop} -- creeping at noise-floor level ($\sim$0.3 counts/s) for the remaining $\sim$80+ seconds of each test, never approaching the full 6173-count target. Total captured: $-2353$ counts (38\%) at the faster settings, $-1301$ counts (21\%) at the gentler settings -- \textbf{a much gentler ramp did not fix it, and if anything captured less of the move}, ruling out "acceleration too aggressive for the load" as the primary cause. No \texttt{0x3E} shaft-protection flag was ever set in either test.
+
+\begin{caution}{A real sound was heard at the burst-to-stop transition, on two separate occasions}
+The user reported hearing something at the point where motion stopped, on two separate test runs. \textbf{Physical inspection ruled out an external obstruction}: no visible obstruction, the bare motor shaft (checked before the gearbox) moves freely and does not catch, and \textbf{the arm segment itself was confirmed to visibly move} during at least one test (ruling out total gearbox/coupling slippage, since the encoder is mounted on the motor's own shaft \emph{before} the gearbox and would not by itself prove the joint's output side actually moved). The combination points toward the motor \textbf{losing synchronization mid-move} (a stepper "chuff"/step-loss event) rather than a hard mechanical limit. \textbf{The motor was also reported "quite warm"} after this sequence of tests at 1600\,mA (documented rated current is 1.2\,A) -- testing was paused for a cool-down rather than continuing to add more energized time on top of that.
+\end{caution}
+
+\subsection{A promising lead: the real production system never sends one far-away target}
+Checking \texttt{arctos\_interface.cpp}'s \texttt{write()} function directly: it only calls \texttt{setJointPosition()} when the commanded position changes by more than \texttt{position\_tolerance\_} -- meaning in real operation, a \texttt{JointTrajectoryController} continuously publishes a smoothly interpolated, frequently-updated intermediate setpoint (at the controller's 100\,Hz \texttt{update\_rate}), and \texttt{write()} forwards each meaningfully-different point as a fresh CAN frame. \textbf{Every test in this entire session has instead sent one single far-away target and waited} -- the opposite of how this driver has ever actually been exercised by the real stack. The burst-then-stop pattern is consistent with the driver executing some bounded internal motion profile per command and requiring a fresh, nearby target to keep advancing, which one-shot far-away commands never provide. Not yet tested: \texttt{joint\_streamed\_move\_test.py} (added this session, not yet run) sends the total move as many small increments in rapid succession to test this directly.
+
+\subsection{A second promising lead: \texttt{POSITION\_CONTROL (0xFD)}, not \texttt{0xF4}/\texttt{0xF5}, is what the project's own working jog code actually uses}
+\texttt{POSITION\_CONTROL (0xFD)} is defined in \texttt{motor\_types.hpp} but \textbf{never referenced anywhere in \texttt{motor\_driver.cpp}} -- the C++ ROS~2 driver only ever uses \texttt{0xF5}. It \emph{is}, however, the command used by \texttt{scripts/set\_zero\_position.py}'s \texttt{relative\_motion\_by\_pulses()}, called repeatedly in a loop from \texttt{find\_home\_position()}, \texttt{find\_opposite\_limit()}, and \texttt{manual\_move\_joint()} -- i.e., exactly the repeated-small-jog pattern this session has been struggling to get right with \texttt{0xF4}/\texttt{0xF5}, and part of the one documented setup flow (\texttt{--init} in the \texttt{ros2\_arctos} README) that this project actually relies on working. \textbf{Its frame layout is structurally different}: a direction bit (\texttt{0x80}/\texttt{0x00}) is OR'd into the top of the speed-high byte, and its position field is in \textbf{microstep pulses} (200 full steps/rev $\times$ 16 microsteps/step $=$ 3200 pulses/motor-rev) rather than the 16384-count/rev encoder scale every other script in this document uses for \texttt{0xF4}/\texttt{0xF5}. Not yet tested: \texttt{joint\_position\_control\_test.py} (added this session, matches \texttt{set\_zero\_position.py}'s exact byte-packing) is ready to try next session.
+
+\subsection{New reusable scripts added this session}
+\begin{itemize}
+    \item \texttt{joint\_stepped\_move\_test.py} -- generalized N-step monitored move (absolute or relative, \texttt{--mode}), safety-band checked against calibrated \texttt{home\_position}/\texttt{opposite\_limit}, optional \texttt{--re-enable-each-step}.
+    \item \texttt{joint\_streamed\_move\_test.py} -- sends a total move as many rapid small \texttt{0xF4} increments instead of one command, to test the trajectory-streaming hypothesis above. Not yet run.
+    \item \texttt{joint\_position\_control\_test.py} -- \texttt{0xFD}-based jog test matching \texttt{set\_zero\_position.py}'s exact pulse-scale and direction-bit convention. Not yet run.
+\end{itemize}
+
+\subsection{Characterizing (not resolving) \texttt{0xFD}: a real, deterministic success signal with a still-unknown trigger}
+\texttt{joint\_position\_control\_test.py} (\texttt{0xFD}) revealed a protocol detail this whole investigation had been missing: \textbf{the driver sends an unsolicited two-frame status sequence per command} -- an immediate \texttt{FD 01} (\texttt{status=1}, "movement started", matching \texttt{motor\_driver.cpp}'s own convention) followed, sometimes, by a second \texttt{FD 02} (\texttt{status=2}, almost certainly "movement complete") arriving up to $\sim$425\,ms later. \textbf{Whether that second frame arrives correlates perfectly with whether the commanded magnitude is actually achieved} -- confirmed by directly matching a raw \texttt{candump} capture against per-step results across an 8-step test: both steps that received \texttt{FD 02} moved within 1\% of their commanded $1^\circ$; all six steps that received only \texttt{FD 01} moved less than $0.04^\circ$ each, several essentially zero.
+
+An initial 3-step test (re-enabling before every command) looked like a full resolution: individual steps of $+0.025^\circ$, $+1.974^\circ$, $+0.998^\circ$ summed to $+2.997^\circ$ against a $3.0^\circ$ total commanded ($99.9\%$), suggesting an incomplete command's shortfall carries forward into the next one. \textbf{This did not hold up when confirmed over a longer 8-step sequence}: steps 1--2 moved correctly (matching \texttt{FD 02} frames confirmed via \texttt{candump}), step 3 partially, and steps 4--8 essentially stopped entirely (each receiving only \texttt{FD 01}) despite an identical fresh-enable-before-each-command pattern -- total movement was $32\%$ of commanded, not $99.9\%$. A follow-up run logging \texttt{READ\_ERROR (0x39)} and \texttt{READ\_IO (0x34)} (the latter never queried anywhere else in this project) at fine resolution around a fresh sequence found \textbf{the very first command of that run failed too} (only \texttt{FD 01}, negligible motion) -- contradicting even the narrower "the first 1--2 commands always succeed" pattern.
+
+Neither additional status opcode explained the difference: \texttt{READ\_IO (0x34)} stayed completely constant (\texttt{[52, 1, 58]}) across every query in that run regardless of success or failure, and \texttt{READ\_ERROR (0x39)}'s trailing bytes changed on nearly every single query whether or not real motion occurred -- behavior more consistent with a free-running counter than a meaningful error/stall code. \texttt{READ\_SHAFT\_PROTECTION\_STATE (0x3E)} never once left its baseline value across any test this session, successful or not.
+
+A retry-on-\texttt{FD-02} mechanism (\texttt{joint\_position\_control\_test.py}, up to 4 retries/step, always re-enabling first) was then built and tested: in one run, \textbf{all 15 attempts across 3 steps got only \texttt{FD 01}, never a single \texttt{FD 02}} -- yet the joint still accumulated real, if uneven, motion across those retries. This broke the working theory that \texttt{FD 02} cleanly gates real motion, and pointed toward something more fundamental than a CAN-protocol quirk.
+
+\subsection{\texttt{ENABLE\_SHAFT\_PROTECTION (0x88)}: a promising lead that turned out to be a false-positive trap}
+\label{sec:shaft-protection-resolution}
+The user reported that manually assisting the joint by hand let a stuck move complete -- direct physical evidence pointing at genuine mechanical resistance. This led to checking whether \texttt{ENABLE\_SHAFT\_PROTECTION (0x88)} -- the command that actually turns on the "Tracking Error Protection Stall" feature described all the way back in Section~1 of this document -- had ever been sent. \textbf{It had not, anywhere in this project}: not in any test script this session, not in the real C++ \texttt{arctos\_hardware\_interface}, not in \texttt{set\_zero\_position.py}. Without it enabled, \texttt{READ\_SHAFT\_PROTECTION\_STATE (0x3E)} reads its baseline value regardless of whether a real stall is occurring.
+
+Sending \texttt{0x88 0x01} once, then repeating a $1^\circ$ move, appeared to confirm it immediately: \textbf{the very first move afterward tripped the flag} (status \texttt{0}\,$\to$\,\texttt{1}), with the joint having moved only $0.0017^\circ$ before the driver locked itself down (requiring a power-cycle of its main supply to clear, per Section~1). Raising current to 2000\,mA and separately trying a much gentler speed (15 vs.\ 50) both still tripped \emph{instantly} on the very first command at that setting -- a pattern insensitive to speed is itself a clue against a straightforward "not enough dynamic torque" stall, since that failure mode should get \emph{better}, not stay identically instant, as speed decreases.
+
+\textbf{The user's own comparison test settled it}: after checking (this time correctly) that this NEMA17's rated current is $1.2$\,A -- not $2.8$\,A, that number belongs to the unrelated NEMA23 originally installed on Joint X -- the exact same command that had just tripped at 2000\,mA and speed\,15 was re-sent \textbf{without} \texttt{0x88} enabled. \textbf{It moved almost perfectly}: $-1.0008^\circ$ against a $-1.0^\circ$ commanded target ($99.9\%$), with both \texttt{FD 01} and \texttt{FD 02} received. \textbf{This refutes "confirmed genuine stall" as this document previously claimed}: the identical command, current, and speed produced a clean, correct move the moment \texttt{0x88} was left off. \texttt{ENABLE\_SHAFT\_PROTECTION} on this driver appears capable of a false-positive trip -- possibly reacting to a normal, brief startup transient present at the start of every move -- not only a genuine sustained one.
+
+\begin{caution}{\texttt{0x88} is off by default in this package's scripts -- treat any trip as a lead, not proof}
+Both \texttt{joint\_position\_control\_test.py} and \texttt{joint\_stepped\_move\_test.py} now gate \texttt{ENABLE\_SHAFT\_PROTECTION} behind an explicit \texttt{--enable-shaft-protection} flag rather than sending it automatically, exactly because of the false-positive result above. If it does trip during real use, cross-check by re-running the identical command with it disabled before concluding a real stall occurred -- and remember a trip latches the driver down and costs a power-cycle to clear, so triggering one by default on every session is expensive for a signal that isn't fully trustworthy yet.
+\end{caution}
+
+\subsection{Final resolution: a real, localized mechanical catch, found and fixed by hand}
+\label{sec:joint-b-resolution}
+A proper statistical test settled the "incomplete move" question for good. \texttt{joint\_b\_statistical\_test.py} (20 reps of $\pm0.5^\circ$, alternating direction so the joint returns near its start each pair, at the correctly-rated $1.2$\,A, speed 15, \texttt{0x88} off) came back \textbf{20/20 (100\%)}, every rep within 1\% of commanded magnitude, no degradation between the first and second half. The same script re-run for \textbf{sustained one-direction} motion instead of alternating reproduced the "burst then stop" pattern exactly: 3--4 good reps, then a hard wall -- but critically, \textbf{starting a fresh sustained run already inside the previously-bad zone failed almost immediately} (1/10), while starting fresh from near $0^\circ$ took several good reps first. That is the signature of a fixed \emph{position}, not a command count, current level, or session-fatigue effect: alternating tests never accumulate enough one-directional travel to reach it, sustained tests do.
+
+That localized it to roughly $-2^\circ$ to $-5^\circ$ in this joint's raw-command coordinate. Told to check that specific range slowly and deliberately (rather than a quick static check, which had found nothing earlier), the user felt \textbf{small catches while rotating through it by hand} -- direct physical confirmation. Manually working the gears back and forth through the range (deliberately running the mechanism through the catch to seat/smooth it) was tried, retested, and iterated on the residual narrower sub-range that remained: an initial pass improved a $-5^\circ$ to $-1^\circ$ sustained test from 10\% to 70\% success; a second pass on the narrower $-2^\circ$ to $-1.7^\circ$ residual brought it to \textbf{100\% (10/10) in both directions}, every rep 98--101\% of commanded magnitude, confirmed across the full previously-affected range.
+
+\begin{caution}{The whole "incomplete move" investigation was a real mechanical fault, not a CAN/firmware issue}
+Every earlier hypothesis this session -- \texttt{0xF4} vs \texttt{0xF5} vs \texttt{0xFD}, working mode, current, re-enabling patterns, \texttt{FD 02} timing, shaft protection -- was chasing symptoms of one real, physical, position-localized mechanical catch. \texttt{FD 02} presence remained a reasonably good proxy for "did this specific command finish" throughout (it degraded exactly where the catch was), but the actual fix was mechanical, found only by a slow, deliberate hand-check of the specific failing range once statistical testing had localized it. If a similar pattern appears on Joint C or any future joint -- clean single moves, degrading specifically under sustained one-direction travel -- localize the range the same way (alternating vs.\ sustained statistical tests) before assuming it is a settings or protocol problem.
+\end{caution}
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Run a broader confirmatory sweep across more of Joint B's full calibrated range (\texttt{home\_position} $+12.87^\circ$ to \texttt{opposite\_limit} $-24.23^\circ$), not just the $\sim$5--10$^\circ$ window tested so far, to rule out any other undiscovered catch elsewhere in the range.
+    \item Re-verify reliability at a more practical production speed (testing here used a gentle \texttt{speed=15}; confirm the fix holds at \texttt{speed=50} and above before relying on it for real trajectories).
+    \item \texttt{ENABLE\_SHAFT\_PROTECTION}'s false-positive behavior (Section~\ref{sec:shaft-protection-resolution}) is still unexplained and remains off by default -- this session's resolution did not depend on it and does not change that finding.
+    \item \textbf{Joint C}: try \texttt{SR\_CLOSE} + 1600\,mA + confirm CANRSP, matching Joint B's verified config. Phase-resistance check and motor/driver swap test are still pending from 2026-08-25. If similar incomplete-move symptoms appear, run the same alternating-vs-sustained statistical comparison early rather than assuming an electrical cause.
+\end{itemize}
+
+\section{2026-08-27 (continued) --- Large-scale motion, a second wall, and a gear-clearance hypothesis}
+\label{sec:session-2026-08-27-large-scale}
+With the $-2^\circ$ to $-5^\circ$ catch fixed and confirmed 100\% reliable in both directions (Section~\ref{sec:joint-b-resolution}), the user requested a much larger stress test: a full $360^\circ$ rotation of the gearbox output, six times, in a bench configuration confirmed by the user to allow free/unlimited rotation (this specific setup does not have the joint's usual $\sim$$37^\circ$ calibrated envelope or any crossing cable at risk).
+
+\subsection{A real shaft-protection trip, and a lesson about tool-output reliability}
+The first full-$360^\circ$ attempt produced no visible movement, and its terminal output was lost to a tool error -- a reminder that a lost or incomplete log means the actual hardware state must be re-verified from scratch (encoder position, enable state, protection state) before continuing, never assumed. Two subsequent attempts (a $30^\circ$ command, then a $15^\circ$ command) each tripped a \textbf{real} \texttt{ENABLE\_SHAFT\_PROTECTION} fault, visible directly on the driver's own physical display: \texttt{"Wrong Protect! Enter.."}. Unlike the earlier false-positive (Section~\ref{sec:shaft-protection-resolution}), \texttt{0x88} appears to have stayed armed across the power-cycles performed earlier in the day (unlike \texttt{ENABLE\_MOTOR}'s state, which does not persist) and tripped for real partway into these longer moves. Pressing \textbf{Enter on the driver's own panel cleared the trip both times -- no power-cycle was required}, updating the earlier assumption that a trip always needs a full power-cycle to clear. Explicitly sending \texttt{0x88 0x00} (disable) resolved the repeat trips.
+
+\subsection{The real behavior once protection was off: a stick-slip pattern, not a clean stall}
+With \texttt{ENABLE\_SHAFT\_PROTECTION} explicitly disabled, a $15^\circ$ single command eventually completed ($99.9\%$ of commanded distance) but took a full \textbf{60 seconds} instead of the 1--2 seconds small moves take, moving in a distinct \textbf{stick-slip} pattern: long stalls of 10--30+ seconds at a fixed position, punctuated by sudden bursts (observed rates up to $\sim$5500 counts/s) that advanced several degrees at once, repeating 5--6 times before finishing.
+
+\subsection{Isolating the cause: removing the belt did not change anything}
+To test whether this was resistance in the belt-driven wrist mechanism downstream of the gearbox, the belt was physically removed and the identical $15^\circ$ command re-run. \textbf{The stick-slip pattern was nearly identical} (same shape, similar total duration, if anything a longer single stall) with the belt off -- despite the motor+gearbox now driving strictly less load than before. \textbf{This rules out the belt-driven wrist mechanism as the cause} and points at the motor/gearbox assembly itself.
+
+\subsection{Chunking into small commands did not avoid it either -- it just found a different wall}
+Given every small isolated command earlier in the day was 100\% reliable, the same $15^\circ$ distance was tried as 15 separate $1^\circ$ chunked commands (\texttt{joint\_statistical\_reliability\_test.py}, sustained mode) rather than one large command. \textbf{Reps 1--6 were clean (99--101\% each), then rep 7 was partial and reps 8--15 completely failed} (no \texttt{FD 02}, negligible motion) -- a hard wall at a \emph{different} absolute position ($\sim$$38$--$39^\circ$ in this session's raw coordinate) than the originally-fixed $-2^\circ$ to $-5^\circ$ zone. Chunking did not solve the underlying problem; it simply relocated where the wall was encountered based on how far the sequence traveled before reaching it.
+
+\begin{caution}{This looks like multiple distributed resistance points, not one isolated defect}
+Between the original catch, this new wall roughly $40^\circ$ away, and a stick-slip pattern that persists across a $15^\circ$ span independent of belt/load, the evidence now points at resistance distributed across the gearbox's own rotational range rather than a single fixable spot. The stick-slip signature (long stall, then sudden release) is also more consistent with tight/insufficient gear-tooth clearance (backlash) than with a single point of debris or damage -- especially plausible for 3D-printed gears, where slight oversizing or ovality from the print process can cause mesh tightness to vary at different rotational positions.
+\end{caution}
+
+\subsection{Decision: reprint the gears with more clearance}
+Given the above, the user is decoupling the mechanism and reprinting the gears slightly smaller (more backlash) rather than continuing to locate and hand-work individual walls one at a time. This is a well-motivated fix given the evidence -- recommended refinements if pursued:
+\begin{itemize}
+    \item Increase clearance modestly, not aggressively -- too much backlash trades this problem for lost motion/imprecision in what is a precision joint.
+    \item If the current gears show visible ovality or warping, consider print orientation/settings, not just uniform scale-down, since that would better explain why some rotational positions bind and others do not.
+    \item Once reinstalled, re-verify across the \textbf{full range} using \texttt{joint\_statistical\_reliability\_test.py} in both \texttt{alternating} and \texttt{sustained} modes, and at multiple starting positions -- today's narrow-range tests gave false confidence more than once before a wider test surfaced the next issue.
+\end{itemize}
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Motor is disabled and the mechanism is being decoupled for the gear reprint. \texttt{can0} was brought down and \texttt{slcand} stopped per the standard shutdown procedure (Section~\ref{sec:can-bringup}) before disconnecting the CANable.
+    \item After reassembly with new gears, re-run the full bring-up procedure (Section~\ref{sec:joint-bringup}) from Step 1 -- do not assume the CAN ID, calibration, or any prior finding still applies to the rebuilt mechanism.
+    \item If the stick-slip pattern persists even after the gear reprint, that would argue against the backlash hypothesis and toward the motor/driver itself (bearing, encoder mounting, or a firmware behavior specific to long single commands) -- keep the belt-off isolation result and the chunked-vs-single-command comparison as reference points for that follow-up.
+\end{itemize}
+
+\section{2026-08-31 --- Housing-off retest, gear reprint plan, and a definitive motor exoneration}
+\label{sec:session-2026-08-31}
+
+\subsection{Project now mirrored on GitHub}
+The custom tooling in this document (every script under \texttt{arctos\_can\_control}, the desktop control-panel app, CANable firmware images, and this SOP itself) is now published at \url{https://github.com/mdion2-maker/arctos_can_integration}. The upstream \texttt{ros2\_arctos} repository is deliberately not duplicated there, since it already exists as its own project.
+
+\subsection{Housing-off retest: the stick-slip pattern got worse, not better}
+With the gearbox's outer housing removed (belt state at time of test not confirmed), the same $15^\circ$ single-command test from Section~\ref{sec:session-2026-08-27-large-scale} was repeated with the user watching the exposed mechanism directly. The stall was \textbf{longer than any prior test} -- stuck at $25.7\%$ of the commanded distance for a full \textbf{72 seconds} before suddenly bursting free and completing the remaining $75\%$ in 4 seconds. The user again had to physically assist it to get moving -- \textbf{confirming a real, sustained mechanical resistance, not a brief transient}. Removing the housing did not reveal an externally visible culprit, suggesting the resistance is internal to the gearbox (a specific stage, a bearing, or the shaft coupling) rather than something the housing alone exposes.
+
+\subsection{Decision: reprint the gears in Tough PLA with corrective settings}
+Given brass was less immediately available than nylon for the user, and given the diagnosis pointed at print-tolerance/backlash rather than a fundamental material limit, the decision was to reprint in Tough PLA (specifically Bambu Lab's own PLA Tough, printed on a Bambu Lab H2D) rather than jumping to metal. Settings recommended, layered on top of Bambu Studio's own built-in PLA Tough filament preset (which should supply temps/cooling -- not overridden by generic figures):
+\begin{itemize}
+    \item \textbf{XY Contour Compensation: $-0.05$ to $-0.1$mm} (Process Settings $\to$ Advanced) -- shrinks the external tooth profile to loosen mesh tightness. This is the setting most directly targeted at the diagnosed problem; \textbf{XY Hole Compensation} (which affects internal cavities like the shaft bore, not the tooth profile) was left at 0 since the diagnosed resistance varies by rotational position -- consistent with tooth-mesh tightness, not a bore/shaft fit issue, which would be relatively constant regardless of angle.
+    \item Print orientation flat (gear axis vertical), not standing on edge -- reduces ovality, which would otherwise reproduce the same position-dependent binding pattern in the new part.
+    \item Layer height $0.12$--$0.16$mm, 4--6 walls (or 80--100\% infill given the small part size), slower outer-wall speed, moderate ($50$--$70\%$) part-cooling fan.
+\end{itemize}
+
+\subsection{Definitive result: the bare motor, fully decoupled, is completely clean}
+\label{sec:bare-motor-exoneration}
+With the motor mechanically disconnected from the gearbox entirely (no belt, no gear coupling, no load whatsoever), \texttt{joint\_statistical\_reliability\_test.py} was run twice using \texttt{--gear-ratio 1.0} (direct motor-shaft degrees, since no gearbox is attached to convert through):
+\begin{itemize}
+    \item \textbf{Alternating}: 20 reps of $\pm180^\circ$ -- \textbf{20/20 (100\%)}, every rep within $0.3^\circ$ of commanded.
+    \item \textbf{Sustained}: 10 reps of $360^\circ$ in the same direction (3600$^\circ$ total, 10 full motor revolutions) -- \textbf{10/10 (100\%)}, every single revolution within $0.15^\circ$ of exactly $360^\circ$, with no stall, no hesitation, and no stick-slip pattern at any point across the entire sequence.
+\end{itemize}
+
+\begin{caution}{The motor, encoder, driver, and CAN chain are exonerated -- the problem is confirmed 100\% mechanical, inside the gearbox}
+This is the cleanest, most controlled test in the entire investigation, and it came back perfect at a scale (10 full revolutions, sustained, in one direction) that reliably triggered the stick-slip pattern in every prior test with the gearbox attached. Every earlier hypothesis about the motor, its encoder mounting, the driver's current/mode settings, or CAN-level command timing can now be set aside. The resistance is definitively located in the gearbox mechanism itself -- fully consistent with, and now strongly supporting, the gear-reprint plan above as the correct fix rather than a guess.
+\end{caution}
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Complete the gear reprint with the settings above; inspect the new gears for visible ovality/warping before installing (a quick visual/caliper check across a few diameters) rather than only discovering it via another multi-hour CAN test cycle.
+    \item Reassemble, then re-run the full verification sequence from Section~\ref{sec:joint-b-resolution} onward: \texttt{can\_id\_scan.py} (do not assume the ID survived reassembly), \texttt{joint\_reliability\_test.py}, then \texttt{joint\_statistical\_reliability\_test.py} in both modes across as much of the range as practical, motor-only baseline (Section~\ref{sec:bare-motor-exoneration}) already established as the reference for "clean."
+    \item If the sustained-mode test still shows any stick-slip after reassembly with the new gears, that would point at a bearing or shaft-alignment issue distinct from tooth-mesh clearance, since the mesh-tightness hypothesis would have been directly addressed by the reprint.
+\end{itemize}
+
+\section{Joint C --- \texttt{SR\_CLOSE} applied, then the same motor-exoneration pattern as Joint B}
+\label{sec:session-joint-c-followup}
+
+\subsection{\texttt{SR\_CLOSE} + 1600\,mA + confirmed CANRSP: still no torque connected}
+Applying Joint B's verified-working panel configuration to Joint C (Section~\ref{sec:session-2026-08-27}) -- \texttt{SR\_CLOSE}, 1600\,mA, CANRSP enabled -- did \textbf{not} produce holding torque while connected to the gearbox; the shaft still span freely. Joint C has now been tried in every documented working mode (\texttt{SR\_vFOC}, \texttt{CR\_vFOC}/\texttt{CR\_FOC}, \texttt{CR\_CLOSE}, \texttt{SR\_CLOSE}) across 1200--3000\,mA, with zero holding torque in any combination while connected -- ruling out a simple settings mismatch as the sole explanation.
+
+\subsection{A confirmed real move -- then inconsistent torque}
+Watching the panel for a fault message (the technique that found Joint B's shaft-protection trip) revealed no error, but did surface something new: after unplugging and replugging the motor connector, a commanded $0.5^\circ$ move executed almost perfectly ($0.4963^\circ$ actual, confirmed independently by both the CAN-side encoder and the driver's own panel display, which reports motor-shaft-scale degrees rather than joint-scale). \textbf{This is Joint C's first confirmed real movement across the entire investigation.} Immediately afterward, though, holding-torque checks were inconsistent -- spinning freely both right after the move and during two subsequent 10s/20s enable-and-hold tests (the second including deliberately wiggling the connector, which changed nothing) -- while the connector was still attached to the gearbox.
+
+\subsection{Bare-motor test: fully exonerated, exactly like Joint B}
+With the motor mechanically disconnected from the gearbox (mirroring Section~\ref{sec:bare-motor-exoneration}'s test on Joint B), using \texttt{joint\_statistical\_reliability\_test.py} with \texttt{--gear-ratio 1.0}:
+\begin{itemize}
+    \item \textbf{Alternating}: 20 reps of $\pm180^\circ$ -- \textbf{20/20 (100\%)}, all within $0.15^\circ$ of commanded.
+    \item \textbf{Sustained}: 10 reps of $360^\circ$ (3600$^\circ$ total, 10 full revolutions) -- \textbf{10/10 (100\%)}, essentially exact.
+    \item \textbf{Static holding torque, isolated}: enabled and held for 10s with no move command -- \textbf{the shaft resisted turning by hand}, confirmed real holding torque, with the motor noticeably warm afterward (consistent with genuine current draw).
+\end{itemize}
+
+\begin{caution}{Joint C's motor and driver are healthy -- every failure observed was downstream of the connector, in the gearbox}
+This flips the earlier "loose connector" theory: a genuinely flaky connector should have caused failures during this 30-command bare-motor test too, and it did not -- perfect reliability throughout, for both motion and static holding torque. The far more consistent explanation across every observation this session: \textbf{the motor and driver are completely fine}, and the one successful move plus the otherwise-consistent "spins freely" results were the gearbox itself intermittently binding -- occasionally overcome by an active move command, but resisting during passive holding. This is the same root-cause category as Joint B (Section~\ref{sec:bare-motor-exoneration}), on the same 67.82:1 gearbox family.
+\end{caution}
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Let the motor cool (it was warm after the holding-torque confirmation) before further enable tests.
+    \item Reconnect Joint C's gearbox and repeat the alternating-vs-sustained comparison used to diagnose Joint B -- if the same stick-slip pattern appears, treat it with the same hands-on approach (localize by feel, work the gears, or reprint with the same corrective settings from Section~\ref{sec:session-2026-08-31}).
+    \item Given both Joint B and Joint C -- built from the same driver/gearbox family -- have now independently converged on "motor and driver clean, gearbox at fault," consider whether this points at a systematic issue in how this gearbox family is manufactured/printed rather than two unrelated one-off defects.
+\end{itemize}
+
+\section{Joint A --- CAN confirmed, bare-motor exoneration, and two script bugs found}
+\label{sec:session-joint-a}
+
+\subsection{Hardware identity: matches the original Joint X spec, but this driver is the CAN variant}
+A newly-connected joint, described as NEMA23, $1.8\,\mathrm{Nm}$, $2.8\,\mathrm{A}$, was labeled ``Joint A'' by the user -- the exact motor spec originally recorded for ``Joint X'' at the very start of this project (Section~\ref{sec:session-2026-08-25}, the joint whose driver turned out to be an RS485 variant, not CAN). Before assuming this was the same failed unit, the bus was scanned directly rather than trusting either the driver panel or \texttt{arctos\_controller.yaml}'s \texttt{A\_joint} entry (which is a \texttt{MKS\_42D}, NEMA17-class config and does not match this motor's spec at all). The scan found exactly one responder, at CAN ID \texttt{0x01}, with a clean checksum-verified reply -- matching \texttt{X\_joint} in the real config (\texttt{motor\_id: 1}, \texttt{gear\_ratio: 13.5}, \texttt{hardware\_type: MKS\_57D}), not \texttt{A\_joint}. This confirms two things at once: the naming the user is using for this joint does not match the letter-keyed config, and -- more importantly -- \textbf{this is a genuine CAN-responding driver}, not a repeat of the original RS485 hardware mismatch.
+
+\subsection{Bare-motor verification, decoupled from any belt/drivetrain}
+With nothing attached (the motor was not connected to any belt/pulley at the time of testing), the full diagnostic ladder used previously on Joints B and C was repeated:
+\begin{itemize}
+    \item \textbf{Link quality} (\texttt{joint\_reliability\_test.py}): 200/200 responses (100\%), 0 CRC failures, 0 encoder jitter while stationary, mean round-trip latency 3.3\,ms.
+    \item \textbf{First motion} (\texttt{joint\_micro\_move\_test.py}): commanded 300 raw counts ($\approx 0.488^\circ$), observed 301 raw counts ($\approx 0.490^\circ$) -- essentially exact, no slip.
+    \item \textbf{Monitored 3-step move} (\texttt{joint\_stepped\_move\_test.py}): three $2^\circ$ relative steps, each landing within about 1\% of commanded, no missed steps.
+    \item \textbf{Alternating statistical test} (\texttt{joint\_statistical\_reliability\_test.py}, \texttt{--gear-ratio 1.0}): 30 reps of $3^\circ$ -- \textbf{30/30 (100\%)}, both halves 100\%.
+    \item \textbf{Sustained statistical test}, run faster and with a bigger step per the user's request (speed 40 instead of the usual gentle 15, inter-rep pause cut from 2.0\,s to 0.5\,s, $25^\circ$ per rep): \textbf{10/10 (100\%)}, both halves 100\%, total travel $248.9^\circ$.
+\end{itemize}
+Same clean profile as both prior bare-motor exonerations (Joint B, Section~\ref{sec:bare-motor-exoneration}; Joint C, Section~\ref{sec:session-joint-c-followup}): this motor, driver, encoder, and CAN link are all healthy.
+
+\begin{caution}{Two real bugs found in the shared test scripts, not hardware faults -- both fixed}
+Two issues surfaced while testing Joint A that would affect any joint with the same characteristics, and have already been corrected in \texttt{joint\_stepped\_move\_test.py}, \texttt{joint\_statistical\_reliability\_test.py}, \texttt{joint\_long\_move\_monitor.py}, \texttt{joint\_position\_control\_test.py}, and \texttt{joint\_streamed\_move\_test.py}:
+\begin{enumerate}
+    \item \textbf{Safe-band ordering assumed \texttt{home\_position > opposite\_limit}.} The band was computed as \texttt{lo = opposite\_limit + margin}, \texttt{hi = home\_position - margin}. This only forms a valid ascending range when \texttt{home\_position > opposite\_limit}, which happens to be true for Joints B and C but is \emph{false} for Joint A/X (\texttt{home\_position} $= -173.5^\circ$, \texttt{opposite\_limit} $= +157.5^\circ$). With the old code this made \texttt{lo > hi}, so \emph{every} move was rejected as leaving the safe band regardless of direction. Fixed by using \texttt{lo = min(home, opposite) + margin}, \texttt{hi = max(home, opposite) - margin}, which is correct for either convention.
+    \item \textbf{The safe-band projection and the \texttt{pct} reliability metric assumed commanded sign equals physical sign.} For any joint with \texttt{inverted: true} in \texttt{arctos\_controller.yaml} (true for every joint in this project: X, Y, A, B, C), the encoder consistently moves opposite to the commanded direction byte. The pre-move safe-band check projected the \emph{commanded} sign forward, so it could both block a command that would have physically moved back into the safe band, and -- more seriously -- fail to catch a command that was nominally moving away from a limit but physically moving toward one. It also made every printed \texttt{pct} value read as roughly $-100\%$ instead of $+100\%$ on perfectly good moves (visible throughout the alternating-test output in this session), which could be mistaken for a systematic problem. Fixed by adding an opt-in \texttt{--inverted} flag to \texttt{joint\_statistical\_reliability\_test.py} that flips the sign used only for the projection and the \texttt{pct} comparison, leaving the actual command byte sent to the driver unchanged.
+\end{enumerate}
+Neither issue reflects a hardware problem; both were caught because Joint A's config has a different sign convention (\texttt{home\_position \textless\ opposite\_limit}) than Joints B and C, which is exactly the kind of case that ought to be checked before trusting a script that was only validated against one convention.
+\end{caution}
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Reconnect Joint A to its belt/drivetrain and repeat the alternating-vs-sustained comparison at realistic (coupled) load, watching specifically for the same stick-slip signature found on Joints B and C.
+    \item Pass \texttt{--inverted} on every future \texttt{joint\_statistical\_reliability\_test.py} run for a joint marked \texttt{inverted: true} in \texttt{arctos\_controller.yaml} -- i.e. essentially always, in this project.
+    \item Resolve the naming mismatch between the user's ``Joint A/B/C/X'' labels and the config's letter-keyed \texttt{A\_joint}--\texttt{C\_joint}/\texttt{X\_joint} entries before it causes a real mix-up; CAN ID \texttt{0x01} is this joint's actual identity regardless of which label is used for it.
+\end{itemize}
+
+\section{2026-08-31 (continued) --- Joint A belt-coupled verification}
+\label{sec:session-joint-a-coupled}
+
+With the belt reconnected, the same three-step ladder used on the bare motor (Section~\ref{sec:session-joint-a}) was repeated at real load, using the actual \texttt{gear\_ratio: 13.5}:
+\begin{itemize}
+    \item \textbf{Supervised first motion} (\texttt{joint\_micro\_move\_test.py}): commanded 300 raw counts, observed exactly 300 -- no slip.
+    \item \textbf{Alternating statistical test} (30 reps, $3^\circ$ steps, \texttt{--inverted}): \textbf{30/30 (100\%)}, both halves 100\%, every rep within about 1\% of commanded, net drift essentially zero.
+    \item \textbf{Sustained statistical test} (10 reps, $5^\circ$ steps): \textbf{10/10 (100\%)}, both halves 100\%, 99--101\% accuracy on every rep across the full $\sim$50$^\circ$ traveled.
+\end{itemize}
+No stick-slip signature at all under real belt load -- Joint A is the first joint in this project to pass both the bare-motor and belt-coupled comparisons cleanly on the first attempt. Per the standing project plan, Joint B testing resumes once confidence in Joint A is established; that is what the next session log covers.
+
+\section{Joint B --- interrupted calibration, a runaway-looking symptom, and recovery}
+\label{sec:session-joint-b-recalibration}
+
+\begin{caution}{This section documents a real safety incident, not just a diagnostic result}
+The motor was disconnected from its gearbox at the time (bare shaft, no load, no obstruction), which is what kept this from being worse than it looked. Read this before changing a working mode on any driver in this project.
+\end{caution}
+
+\subsection{What happened}
+While reconnecting to Joint B, the user changed the driver's working mode to \texttt{SR\_CLOSE} on the panel. The motor then began spinning fast and continuously and did not stop on its own. Unplugging the CANable adapter (removing the CAN link) did \emph{not} stop it -- the user had to cut power to the motor/driver directly. On a second attempt to resolve it (letting the panel's own routine run again), the same thing happened, this time also accompanied by an audible squeak, prompting an immediate power cut again. At each point the correct action was taken: cut motor power first, ask questions about root cause second.
+
+\subsection{Diagnosis}
+Two details narrowed this down:
+\begin{itemize}
+    \item The motor was confirmed bare (no gearbox attached) and unobstructed both times, which ruled out the squeak being a load-bearing mechanical strain (e.g. a gear grinding) -- consistent instead with normal stepper coil whine at the speed the routine was running at.
+    \item The panel's position LED tracked rotation normally while it was happening, meaning the encoder itself was being read correctly -- this argued against a corrupted/garbage encoder value driving a genuine closed-loop runaway, and for a simpler explanation: \textbf{changing the working mode to \texttt{SR\_CLOSE} auto-triggers an encoder self-calibration routine on this driver, and that routine was interrupted (twice) before it could finish.} Some MKS firmware re-attempts an incomplete calibration on every subsequent power-up, which matches the user's report that it happened again, immediately, the next time it was powered on.
+\end{itemize}
+
+\subsection{Recovery}
+Since the motor was bare and unobstructed, the risk of letting the routine run was mechanical-shaft-safety only (keep hands, hair, and loose clothing clear of a fast-spinning exposed shaft), not load/damage risk. The recommendation was to power on, touch nothing, and time it rather than interrupt again. This worked: the calibration completed on its own, the working mode was kept at \texttt{SR\_CLOSE}, and the user also changed the driver's CAN ID to \texttt{0x02} on the panel at the same time.
+
+\begin{caution}{Changing a driver's working mode can trigger a real, uninterruptible-looking calibration -- let it finish}
+If a driver starts moving on its own immediately after a working-mode change and won't stop, the first move is always to cut power to the motor/driver itself -- unplugging only the CAN adapter does not stop a firmware-internal routine like this. But if the motor is confirmed bare/unobstructed, letting a suspected calibration routine run to completion (rather than interrupting it again) is usually the faster path back to a working state, since an interrupted calibration can leave the driver re-attempting it on every power-up rather than settling.
+\end{caution}
+
+\subsection{Post-recalibration verification}
+The new CAN ID was verified by scan, not assumed from the panel (per the project's standing rule): \texttt{can\_id\_scan.py} found exactly one responder, at \texttt{0x02}, confirming the panel's reported value was correct this time. With the motor still bare (\texttt{--gear-ratio 1.0}):
+\begin{itemize}
+    \item \textbf{Link quality}: 200/200 responses (100\%), 0 CRC failures, 0 encoder jitter, mean latency 2.7\,ms.
+    \item \textbf{First motion}: commanded 300 raw counts, observed 304 -- within about 1.3\%, no slip.
+\end{itemize}
+An alternating-vs-sustained statistical comparison followed, bare motor, \texttt{--gear-ratio 1.0}, using generous $\pm 360^\circ$ testing bounds rather than the real narrow joint-level limits (which do not apply while decoupled):
+\begin{itemize}
+    \item \textbf{Alternating} (30 reps, $3^\circ$ steps): every single rep landed within 0--2\% of commanded magnitude, with no degradation across the run -- but \textbf{0/30 reps ever reported the \texttt{FD 02} status byte} this script treats as its success signal; every rep instead only ever showed status \texttt{1}.
+    \item \textbf{Sustained} (10 reps, $20^\circ$ steps): the same pattern held -- 99--101\% accuracy on every rep, $200.3^\circ$ traveled with zero degradation, and again \textbf{0/10 reps reported \texttt{FD 02}}. Consistent across both modes, this looks like a stable behavioral change rather than a one-off fluke.
+\end{itemize}
+
+\begin{caution}{Perfect motion, but the \texttt{FD 02} success status never appeared -- don't misread this as 0\% reliability}
+This is not a repeat of the earlier false-positive lesson from \texttt{ENABLE\_SHAFT\_PROTECTION}, but it rhymes with it: the SOP already documents (Section~\ref{sec:session-2026-08-27}, ``Characterizing \texttt{0xFD}'') that this status byte is a real signal with a still-unknown trigger condition, not a required precondition for real motion. Here, every rep's actual encoder-measured movement matched the commanded value almost exactly, alternating direction cleanly 30 times in a row with zero drift -- physically, this is a perfect result. The status frames simply never included the specific byte this script's success check looks for, only a different one (\texttt{1}) that Joint A's equivalent tests always paired with \texttt{2}. Whether this is a benign side effect of the just-completed recalibration and CAN ID change, or a genuine behavioral difference worth tracking, is not yet known -- but the fix is not to distrust the motion, it is to stop treating \texttt{FD 02} as the only valid definition of success in this script.
+\end{caution}
+
+\section{A real runaway, traced to an absolute-position encoding bug, not the gearbox}
+\label{sec:session-absolute-position-bug}
+
+\begin{caution}{A confirmed software bug, not a mechanical or calibration fault -- but it produced a genuinely dangerous incident}
+With Joint B's reprinted gearbox reconnected, a routine supervised first-motion test (\texttt{joint\_micro\_move\_test.py}, commanding a tiny $\sim 0.1^\circ$ nudge) instead produced a large, continuous, non-settling motion that did not stop within the test's 5-second watch window. The user had to cut motor power directly. This is documented in full because the same class of bug is present in three other scripts and needs to be understood, not just patched around.
+\end{caution}
+
+\subsection{What the test actually showed}
+The encoder trace during the 5-second window was smooth and strictly monotonic (roughly $-2080$ raw counts per 0.5\,s sample, ten samples straight, no deceleration) -- not noise, not a stall, not a protocol error. It looked exactly like a real, large, deliberately-commanded move that simply hadn't finished yet. The command box itself confirmed this: commanded 300 raw counts ($\approx 0.097^\circ$), observed $-20{,}871$ raw counts ($\approx -6.76^\circ$) in just those five seconds, with no sign of nearing a target.
+
+\subsection{Root cause: absolute-position encoding breaks once the raw counter has drifted far from zero}
+\texttt{joint\_micro\_move\_test.py} computed an absolute target (\texttt{target\_raw = raw0 + delta\_counts}) and packed it into the driver's 3-byte position field with a plain \texttt{int(target\_raw) \& 0xFFFFFF} -- ordinary two's-complement truncation. This has been in the script since it was written and never caused a problem before, because every prior test on every joint started from a raw position near zero (a few hundred counts at most), where two's-complement truncation of a small number is indistinguishable from the driver's real encoding.
+
+Joint B's raw absolute counter, however, had drifted to roughly $-274{,}000$ counts by this point in the session -- the accumulated result of the earlier bare-motor alternating and sustained tests (Section~\ref{sec:session-joint-b-recalibration}), none of which ever re-homed or zeroed the joint, because none of them needed to: they all use \emph{relative} moves, so absolute drift never mattered to them. But \texttt{joint\_micro\_move\_test.py}'s absolute-target math did depend on it. Packing $-273{,}639$ (start $-273{,}939$ plus the 300-count nudge) via plain 24-bit two's complement produces the byte pattern \texttt{FB D3 19}. Decoded the way this driver family actually reads a position field -- a direction bit in the top bit of the first byte, and a 23-bit \emph{unsigned magnitude} in the rest, not full two's-complement -- that same bit pattern means direction bit set, magnitude $0{,}x7BD319 = 8{,}111{,}385$ pulses, i.e. roughly $178{,}220^\circ$. A 300-count nudge was, by encoding accident, transmitted as a request to travel almost 500 revolutions. That fully explains a large, smooth, non-settling motion with no error reported -- the driver was doing exactly what it was (wrongly) told.
+
+\subsection{Fix applied}
+\texttt{joint\_micro\_move\_test.py} was switched from \texttt{ABSOLUTE\_POSITION (0xF5)} with a raw absolute-target packing to \texttt{POSITION\_CONTROL (0xFD)} with a direction byte plus an always-\emph{positive} magnitude -- the same pattern already proven safe across every joint in this project via \texttt{joint\_statistical\_reliability\_test.py} and \texttt{joint\_position\_control\_test.py} (thousands of commands, zero encoding failures, across Joints A, B, and C). This pattern never references the joint's current absolute position at all, so it cannot repeat this failure regardless of how far a joint's raw counter has drifted.
+
+\begin{caution}{The first version of this fix was still off by 5.12x -- a units mismatch, not a repeat of the encoding bug}
+A follow-up guarded re-test (small move, active 1$^\circ$ safety cutoff polled continuously rather than just watched) landed at $0.4976^\circ$ against a commanded $0.0972^\circ$ -- a real, repeatable $5.12\times$ overshoot, though bounded and settled, not a runaway. Cause: \texttt{POSITION\_CONTROL}'s pulses field is in \emph{motor microstep} scale (\texttt{MICROSTEPS\_PER\_MOTOR\_REV = 3200}, i.e. 200 full steps $\times$ 16 microsteps), not the 16384-count encoder scale \texttt{joint\_micro\_move\_test.py}'s \texttt{--delta-counts} was already defined in. The first fix passed the encoder-scale number straight through as pulses; $16384 / 3200 = 5.12$, matching the overshoot exactly. Corrected by converting: \texttt{pulses = round(delta\_counts * MICROSTEPS\_PER\_MOTOR\_REV / ENCODER\_CPR)}, matching the conversion already used correctly in \texttt{joint\_statistical\_reliability\_test.py}. Re-tested clean: $0.0969^\circ$ actual against $0.0972^\circ$ commanded, settled immediately, no cutoff needed.
+\end{caution}
+
+\begin{caution}{Three other scripts share the same class of risk and have not yet been fixed}
+A repo-wide check found the identical unguarded \texttt{\& 0xFFFFFF} packing in:
+\begin{itemize}
+    \item \textbf{\texttt{joint\_stepped\_move\_test.py}, \texttt{--mode absolute}} -- packs a full absolute \texttt{target\_raw}, the exact same pattern that just failed. Unverified and should be treated as unsafe on any joint with a large or unknown drifted position until fixed.
+    \item \textbf{\texttt{joint\_stepped\_move\_test.py}, \texttt{--mode relative}, and \texttt{joint\_streamed\_move\_test.py}'s \texttt{move\_relative()}} -- pack a possibly-\emph{negative} relative delta the same unguarded way, rather than splitting sign into a direction byte and magnitude. Whether a small negative delta is actually misread the same way has not been empirically confirmed either way; treat as unverified rather than assumed-safe.
+    \item \textbf{\texttt{mks\_driver.py}} -- has the same absolute-target packing pattern (\texttt{move\_relative\_degrees}), guarded only by a hardcoded $\pm 71{,}500$-pulse boundary check with no stated derivation. This file is already documented elsewhere in this SOP as containing placeholder/untrustworthy calibration numbers copied from an unrelated joint; it also has an outright bug independent of this one (\texttt{\_\_init\_\_} references \texttt{self.PULSES\_PER\_MOTOR\_DEGREE}, which is never defined, so instantiating the class would raise \texttt{AttributeError}). Do not treat its $\pm 71{,}500$ guard as a validated safe boundary -- it has not been re-derived or confirmed here.
+\end{itemize}
+Until these are fixed and verified, prefer \texttt{joint\_statistical\_reliability\_test.py} / \texttt{joint\_position\_control\_test.py} for any real motion test -- they are the only scripts in this project with an extensive, confirmed-safe track record for exactly this reason.
+\end{caution}
+
+\subsection{A note on the earlier Joint B ``partial burst then stop'' investigation}
+\texttt{joint\_stepped\_move\_test.py}'s own header notes it was built while chasing Joint B's original 2026-08-27 ``commands get acknowledged but only produce a partial burst of motion'' behavior, using \texttt{--mode absolute} test runs among others. That investigation's eventual conclusion -- a real, physical gear-mesh clearance problem, confirmed by hand and by the proven-safe 0xFD statistical tests -- is not in doubt; it was independently corroborated multiple ways, including bare-motor exoneration. But any individual \texttt{--mode absolute} result from that session should now be read with this encoding risk in mind, in case it added noise on top of the real mechanical signal.
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Fix \texttt{joint\_stepped\_move\_test.py} and \texttt{joint\_streamed\_move\_test.py} to use the same direction-byte-plus-magnitude \texttt{POSITION\_CONTROL} pattern, then re-verify each against a joint with a deliberately large drifted position before trusting them again.
+    \item Do not use \texttt{mks\_driver.py} as-is; it needs the same fix plus resolution of the undefined-attribute bug before it can be trusted for anything.
+    \item Consider adding a periodic homing/re-zero step to the bare-motor statistical tests specifically to keep raw counters from drifting this far in the first place, independent of fixing the encoding bug itself.
+\end{itemize}
+
+\section{Joint B real-load verification, after re-establishing a safe envelope by hand}
+\label{sec:session-joint-b-real-load}
+
+\subsection{The calibrated home/opposite-limit values were no longer trustworthy}
+Before testing at real gearbox load, a fresh position read showed the joint at $-175.14^\circ$ by the software's math -- far outside \texttt{arctos\_controller.yaml}'s real calibrated range for this joint ($-24.23^\circ$ to $12.87^\circ$, about $37^\circ$ wide). This is a direct consequence of every bare-motor test in this session (Sections~\ref{sec:session-joint-b-recalibration}, \ref{sec:session-absolute-position-bug}) being relative-move-only and never re-homing: hundreds of degrees of untracked rotation accumulated, so the raw counter is no longer anchored to the joint's real physical zero. With the gearbox now attached and a real, narrow mechanical range, trusting the stale calibrated bounds against this drifted reading could have driven the joint into a hard stop with no warning, since the safe-band check only protects against what it's told, not against a wrong reference frame.
+
+\subsection{Re-establishing a safe envelope by hand instead of trusting stale calibration}
+Rather than guess, the joint's physical position was checked by hand: with coils disabled, the user reported it currently sits pointing straight up, with roughly $30^\circ$ of free travel available in each direction before a hard stop. That number, not the stale calibrated values, was used to build the test's safe band: a fresh raw read gave $-175.144^\circ$, and \texttt{--home-position-deg -205.14 --opposite-limit-deg -145.14} (current position $\pm 30^\circ$) was passed to \texttt{joint\_statistical\_reliability\_test.py}, giving roughly $\pm 27^\circ$ of usable room after the script's default $3^\circ$ margin.
+
+\subsection{Results: clean at real load, matching the bare-motor result exactly}
+\begin{itemize}
+    \item \textbf{Alternating} (20 reps, $2^\circ$ steps): \textbf{100\% magnitude accuracy on all 20 reps}, net drift $+0.0023^\circ$ over the whole run -- effectively zero.
+    \item \textbf{Sustained} (5 reps, $5^\circ$ steps, chosen to stay within the $\pm 27^\circ$ confirmed-safe room): \textbf{100\% accuracy on all 5 reps} (99.97--100\% each), $25.0^\circ$ traveled essentially exactly as commanded, ending at $-200.14^\circ$, comfortably inside the safe envelope.
+\end{itemize}
+As with every test since the recalibration (Section~\ref{sec:session-joint-b-recalibration}), \texttt{FD 02} never appeared in either run -- consistent with the already-documented behavioral change, not a new concern. No stick-slip signature at all under real load. Joint B now matches Joint A: clean on both the bare-motor and real-load comparisons, on the reprinted gearbox.
+
+\begin{caution}{Re-home Joint B properly before trusting absolute-degree commands again}
+This session's safe envelope was built from a hand-estimated $\pm 30^\circ$, which was good enough for a supervised statistical test but is not a substitute for real homing. Before running anything that trusts \texttt{arctos\_controller.yaml}'s \texttt{home\_position}/\texttt{opposite\_limit} values again (or before any unsupervised/ROS-driven motion), re-home Joint B properly so its raw counter is re-anchored to a known physical reference.
+\end{caution}
+
+\begin{caution}{\texttt{ENABLE\_MOTOR 0x00} does not appear to interrupt a \texttt{POSITION\_CONTROL} move already in progress}
+Returning Joint B to its confirmed "straight up" reference position ($-175.14^\circ$) after the tests above, a guarded single relative move undershot its 8-second monitoring window and the script disabled the motor (\texttt{0xF3 0x00}) and exited while still $14^\circ$ short. Re-running the same script moments later found the joint had continued on toward the target well past where monitoring stopped -- the move kept executing on the driver's own internal control loop after the disable command was sent, not just after the script exited. \textbf{Disabling coils does not appear to be an immediate stop for a move already underway; \texttt{EMERGENCY\_STOP (0xF7)} is the actual immediate-halt command.} This session it resolved safely only because the residual motion happened to continue in the correct direction and stayed inside the confirmed-safe envelope the whole time. Any future guarded test that might need to actually interrupt an in-flight \texttt{POSITION\_CONTROL} move should send \texttt{0xF7}, not rely on disabling coils.
+\end{caution}
+
+\begin{caution}{Correction: everything labeled ``Joint B'' in this session (Sections~\ref{sec:session-joint-b-recalibration}--\ref{sec:session-joint-b-real-load}) was actually Y\_joint, not B\_joint}
+After this session's testing was done, the user realized the naming had drifted: the physical unit being called ``Joint B'' throughout the recalibration incident, the absolute-position encoding bug, and the real-load verification was actually \texttt{Y\_joint} (\texttt{motor\_id: 2, gear\_ratio: 150.0, hardware\_type: MKS\_57D}) -- confirmed by the fact that the CAN ID found during that session, \texttt{0x02}, is exactly Y\_joint's real \texttt{motor\_id}, not B\_joint's (\texttt{5}). Separately, ``Joint A'' throughout this document is confirmed correct as \texttt{X\_joint} (already used with the right \texttt{gear\_ratio: 13.5} throughout).
+
+The real B\_joint (\texttt{motor\_id: 5, gear\_ratio: 67.82, MKS\_42D}) is the joint referred to earlier in this document under the original Joint B gear-backlash investigation (Sections~\ref{sec:session-2026-08-27}--\ref{sec:bare-motor-exoneration}), from before ``Joint A'' existed in this project's vocabulary -- that work is unaffected by this correction.
+
+\textbf{Practical impact of this session's mislabeling:} every script run against the mislabeled joint used \texttt{--gear-ratio 67.82} (B\_joint's value) instead of the correct \texttt{150.0} (Y\_joint's value). Since \texttt{joint\_deg = raw \texttt{*} 360 / 16384 / gear\_ratio}, using the smaller gear ratio made every reported ``joint degree'' figure read about $150/67.82 \approx 2.21\times$ \emph{larger} than the true physical rotation -- the real motion was smaller than reported, not larger. The hand-measured $\pm 30^\circ$ safe envelope (Section~\ref{sec:session-joint-b-real-load}) was likewise computed in the wrong-scaled unit, which made the enforced raw-count safety bound \emph{tighter} than the true physical limit, not looser. No part of this correction indicates an actual safety violation; it indicates the reported degree figures for that joint in this session should not be trusted at face value, and any future work on this specific unit should use \texttt{gear\_ratio: 150.0} and Y\_joint's real calibrated \texttt{home\_position}/\texttt{opposite\_limit} (\texttt{-0.854}/\texttt{2.006} rad) going forward.
+\end{caution}
+
+\section{Joint Z bring-up (bare motor)}
+\label{sec:session-joint-z}
+
+\subsection{Settings and calibration}
+Panel configured to \texttt{SR\_CLOSE}, 1600\,mA (matching the working baseline established for the other MKS\_42D-family joints), and calibrated -- this time letting the routine run all the way to completion and settle on its own, per the lesson learned from Y\_joint's interrupted-calibration incident (Section~\ref{sec:session-joint-b-recalibration}). CAN ID verified by scan (not assumed from the panel) as \texttt{0x03}, matching \texttt{Z\_joint}'s real \texttt{motor\_id} in \texttt{arctos\_controller.yaml} exactly -- no naming mismatch this time.
+
+\begin{caution}{Initial reliability/first-motion results were reported at the wrong scale, then corrected}
+Before confirming the motor was bare (decoupled from its external gearbox), the reliability and first-motion tests were run with \texttt{--gear-ratio 150.0} out of habit. Once confirmed bare, this was corrected to \texttt{--gear-ratio 1.0} for the remaining tests, matching this project's standing convention for every other bare-motor test. The first-motion result was re-derived: the commanded 300 raw-count move was actually $\approx 6.50^\circ$ of real motor-shaft rotation (observed $\approx$ -296 counts $\approx -6.50^\circ$), not the $\pm 0.04^\circ$ originally reported at the wrong scale. As with the Y\_joint mislabeling above, the raw CAN commands and actual physical motion were correct throughout -- only the degree-unit reporting was off, caught before any statistical testing was run at the wrong scale.
+\end{caution}
+
+\subsection{Results: clean on the bare motor}
+\begin{itemize}
+    \item \textbf{Link quality}: 200/200 responses (100\%), 0 CRC failures, 0 encoder jitter, mean latency 3.4\,ms.
+    \item \textbf{First motion} (corrected scale): $\approx 6.50^\circ$ commanded and observed, matching closely.
+    \item \textbf{Alternating} (30 reps, $3^\circ$ steps, \texttt{--gear-ratio 1.0}, \texttt{--inverted}): \textbf{30/30 (100\%)}, both halves 100\%, consistent $\sim$97\% magnitude accuracy, \texttt{FD 02} present on every rep (matching Joint A/X's normal behavior, unlike Y\_joint's post-recalibration change).
+    \item \textbf{Sustained} (10 reps, $20^\circ$ steps): \textbf{10/10 (100\%)}, both halves 100\%, 98--102\% accuracy, $200.4^\circ$ traveled with no degradation.
+\end{itemize}
+Joint Z is clean on the bare motor, matching the pattern for every other joint verified so far in this project. Not yet tested at real load (still decoupled from its external gearbox/drivetrain at time of writing).
+
+\section{Joint Z real-load testing --- a chain of apparent mechanical problems, all traced to one test-script bug}
+\label{sec:session-joint-z-real-load}
+
+\subsection{Safety envelope: a correction mid-session, then a real hard-stop scare avoided}
+With the belt attached, the user initially reported $\pm 20^\circ$ of room by hand, then corrected this to $\pm 10^\circ$ before any test that mattered was run at the wider figure. The correction mattered: the first alternating test at very slow speed (5) drifted a net $-10^\circ$ over 10 reps and initially looked like it might explain a suspected gear-backlash problem -- but re-examining it against the corrected $\pm 10^\circ$ figure, the final position landed almost exactly on the true boundary, raising the possibility the joint had simply driven into a real hard stop rather than exhibited a mechanical fault. The user confirmed nothing was jammed and manually recentered the joint, reporting the same $\pm 10^\circ$ figure from the new middle.
+
+\subsection{The reversal problem was real, not a hard-stop artifact}
+Retesting at the same slow speed from a freshly-centered, properly-verified-safe position reproduced the identical failure pattern almost exactly (\texttt{dir=+} moving $\approx -0.81^\circ$ against a $-2.0^\circ$ command; \texttt{dir=-} moving $\approx -1.19^\circ$ against a $+2.0^\circ$ command -- wrong sign, not just wrong magnitude), aborting safely via the safe-band check partway through. Since this was nowhere near a hard stop this time, the hard-stop explanation was ruled out: this is a real, repeatable behavior specific to alternating direction under load at very slow speed.
+
+\subsection{A clarifying single-direction test, then full resolution at normal speed}
+A single sustained-direction corrective move (recentering the joint, still at speed 5) progressed smoothly and accurately toward its target with no sign of the reversal problem -- confirming the issue is specific to \emph{alternating} direction, not slow speed in general. Retesting the alternating comparison at normal speed (15) from the same properly-centered, verified-safe position came back completely clean: \textbf{10/10 (100\%)}, every rep within 0.3\% of commanded magnitude, net drift $+0.0001^\circ$.
+
+\begin{caution}{Working theory at the time: backlash needing momentum to close on reversal -- see full retraction below}
+This was the working explanation reached in-session for the slow-speed alternating result above. It turned out to be the wrong explanation for a related-looking but distinct set of symptoms found next (the sustained-test "stiction" pattern), which was fully retracted after finding a real script bug. Whether \emph{this specific} slow-speed alternating finding is itself an artifact of the same bug, rather than a real backlash/momentum effect, is addressed at the end of this section -- read to the end before trusting either conclusion.
+\end{caution}
+
+\subsection{A ``stiction'' pattern that was actually a test-script bug -- full retraction}
+The sustained tests that followed (documented in earlier drafts of this section) appeared to show real partial-completion behavior at $3^\circ$ and $5^\circ$ steps -- undershooting on a move's first attempt, sometimes recovering on a second attempt, sometimes not -- and were provisionally attributed to mechanical stiction (static friction higher than kinetic, needing a "warm-up" move to fully engage). \textbf{This conclusion was wrong, and has been fully retracted.}
+
+The actual cause: \texttt{joint\_statistical\_reliability\_test.py} read the encoder exactly once, a fixed \texttt{--status-timeout-s} (default 4.0\,s) after sending each move, regardless of whether the move had actually finished. On Joint Z's gear ratio (150, much larger than Joint B's 67.82 this script was originally tuned against), moves of a few degrees at normal speed genuinely take 5--8+ seconds to complete. Every rep was therefore measured mid-motion. The shortfall then finished silently during the 2-second inter-rep pause, uncounted, and got folded into the \emph{next} rep's reported delta -- fabricating a completely artificial "first move undershoots, later moves recover" pattern that had nothing to do with the joint's real mechanical behavior.
+
+This was confirmed conclusively by watching two isolated single moves (a $5^\circ$ and a $3^\circ$) continuously for up to 20 seconds with no fixed cutoff: both reached their commanded distance almost exactly ($-5.0010^\circ$ and $+3.0022^\circ$ respectively) and held rock-steady afterward -- they were never stuck or resisting, they simply took longer than the old test script waited.
+
+\textbf{Fix applied:} \texttt{joint\_statistical\_reliability\_test.py} now polls the encoder until the position genuinely stops changing (three consecutive stable readings) instead of reading once on a fixed clock, with \texttt{--status-timeout-s} repurposed as a generous upper bound (default raised to 15\,s) rather than a fixed wait. Re-running both step sizes with the fixed script came back completely clean: $3^\circ$ sustained, 5 reps, \textbf{100\% accuracy on every single rep including the first} ($-3.0045^\circ$ to $-2.9962^\circ$), with \texttt{FD 02} present on every rep this time; $5^\circ$ sustained, 6 reps, \textbf{100\% accuracy on every rep} ($+4.9970^\circ$ to $+5.0029^\circ$), \texttt{FD 02} present throughout. There is no stiction, no step-size dependency, and no completion problem at normal speed on this joint -- the joint has been behaving correctly the entire time.
+
+\begin{caution}{Re-verified: the slow-speed "reversal problem" was the same bug too -- fully retracted}
+Re-run with the fixed script (10 reps, $2^\circ$, alternating, speed 5): \textbf{10/10 (100\%) magnitude accuracy in both directions}, \texttt{FD 02} present on 9 of 10 reps. No wrong-sign moves, no partial completion, no reversal problem of any kind. The entire ``low-speed reversal failure'' finding earlier in this section was the identical fixed-timeout measurement bug, not a real behavior -- there is nothing wrong with Joint Z at slow speed either.
+\end{caution}
+
+\subsection{Conclusion: Joint Z has no mechanical issues at any speed or step size tested}
+Every real-load finding in this section that suggested a mechanical problem -- the low-speed reversal failure, the step-size-dependent under-completion, the ``stiction'' recovery pattern -- was the same single root cause: the test script measuring position before slower moves had actually finished. With that fixed, Joint Z is clean across bare-motor and real-load testing, both directions, multiple step sizes, and both slow and normal speed. This is a good example of why an odd result should prompt checking the measurement method before concluding the hardware is at fault.
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Apply the same settle-detection scrutiny to any other joint's earlier results that used the old fixed-timeout version of this script, particularly any with a large \texttt{gear\_ratio} where moves take longer to complete (Y\_joint at 150) -- Joints A/X (13.5) and B/C (67.82) have smaller gear ratios and shorter move durations, making this less likely to have affected them, but it has not been explicitly re-checked.
+    \item Sync the fixed \texttt{joint\_statistical\_reliability\_test.py} to the public repo and note the fix in its own history, not just here.
+\end{itemize}
+
+
+\section{2026-09-03 --- Joint C: endstops made readable, and verified motion}
+\label{sec:session-2026-09-03}
+Two things that had been blocked for several sessions were resolved: the endstop
+sensors became visible to the driver, and the joint was confirmed to drive its
+load accurately. Neither turned out to be the hardware fault previously recorded.
+
+\subsection{The endstop fault was configuration, not wiring or sensors}
+Across two sessions and \textbf{two different sensors}, a hall endstop on Joint C
+would light its own LED under a magnet while \texttt{READ\_IO (0x34)} never
+changed. The 2026-08-25 line of reasoning concluded the break lay between the
+sensor's output pin and the driver's input pin. It did not.
+
+The Arctos build does not use the vendor's default endstop wiring. The MKS
+manual's default puts a limit switch on the \texttt{IN\_1} terminal of the
+CAN-side connector, but the Arctos documentation instructs builders on 42D axes
+to enable \textbf{limit port remap}, which moves the left limit onto the
+\texttt{En} pin and the right limit onto \texttt{Dir}, and requires \texttt{Com}
+to be tied to the matching high level. This arm is wired that way: the
+sensor's north output on \texttt{En}, its south output on \texttt{Dir}.
+
+The remap is not enabled by default, and it had never been sent to this driver.
+Without it, bit~0 of \texttt{0x34} reports the physical \texttt{IN\_1} terminal
+--- which is correctly empty on this build --- so it idled high forever no
+matter what the magnet did. The driver was faithfully reporting an unconnected
+pin. Enabling the remap changed the resting byte from \texttt{0x01} to
+\texttt{0x03} instantly, because bit~1 stopped being a nonexistent 42D input and
+started reporting the \texttt{Dir} pin.
+
+\begin{lstlisting}[language=bash, caption=Enable limit port remap on Joint C]
+# 0x9E enable=01 -- CAN ID 0x06, checksum 0x06+0x9E+0x01 = 0xA5
+cansend can0 006#9E01A5
+# reply 9E 01 A5  -> status = 1, set success
+\end{lstlisting}
+
+\begin{caution}{There is no read-back for the remap flag}
+The manual documents \texttt{0x9E} as a write only. Nothing reports whether
+remap is currently on, so it cannot be queried --- only set. If a future session
+finds an endstop silent again, re-send \texttt{9E 01} before suspecting wiring.
+\end{caution}
+
+\subsection{Verified bit mapping and trigger polarity}
+With remap enabled, and measured against both magnet poles:
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Bit} & \textbf{Reports} & \textbf{Pin} & \textbf{Triggered by} \\ \midrule
+bit 0 & \texttt{IN\_1} & \texttt{En}  & north pole \\
+bit 1 & \texttt{IN\_2} & \texttt{Dir} & south pole \\ \bottomrule
+\end{tabular}
+\end{center}
+Both idle \textbf{high} and read \textbf{low} when triggered, so the default
+\texttt{Hm\_Trig = Low} is already correct and needs no change. Resting byte is
+\texttt{0x03}; north alone gives \texttt{0x02}, south alone \texttt{0x01}. The
+two never went low together --- no cross-talk between the outputs.
+
+\subsection{Prerequisites that must be right for any of this to work}
+\begin{itemize}
+    \item \textbf{\texttt{Com} tied to 5\,V.} \texttt{En} and \texttt{Dir} are
+    opto-isolated; with \texttt{Com} floating they cannot register anything.
+    The manual is explicit: if the \texttt{STP/DIR/EN} signal high level is
+    5.0\,V, \texttt{Com} must be 5.0\,V.
+    \item \textbf{A serial work mode.} The manual restricts remap to serial
+    control mode, and in any \texttt{CR\_} mode \texttt{En} and \texttt{Dir}
+    \emph{are} the pulse-interface enable and direction inputs. This joint was
+    set to \texttt{SR\_vFOC}.
+    \item \textbf{No DIP switch is involved on the 42D.} The \texttt{SW1}
+    pin-2 instruction that circulates for this board belongs to the 57D half of
+    the manual. On the 42D, \texttt{EVCC}/\texttt{EGND} is the board's own 5\,V,
+    rated 20\,mA.
+    \item \texttt{EndLimit} is \emph{not} needed to read \texttt{0x34}. It only
+    governs whether the driver acts on a limit. It remains \texttt{Disable}.
+\end{itemize}
+
+\subsection{Sensor characterisation}
+A magnet parked at the edge of the sensor's range makes the output oscillate
+across its threshold, which on a live limit would read as the endstop repeatedly
+opening and closing. Held deliberately, both channels are clean: the longest
+uninterrupted hold measured \textbf{5.27\,s with zero bounce}. Short events and
+one 0.09\,s re-trigger were traced to the magnet physically slipping, confirmed
+by the operator, not to an electrical fault.
+
+\subsection{Motion: Joint C drives its load, contradicting 2026-08-25}
+With coils enabled in \texttt{SR\_vFOC}, a commanded 4\textdegree{} joint move and
+return:
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+ & \textbf{Encoder} & \textbf{From start} \\ \midrule
+start          & 2270  & --- \\
+after 4\textdegree{} out & 14621 & $+4.002$\textdegree{} \\
+after return   & 2271  & $+0.0003$\textdegree{} \\ \bottomrule
+\end{tabular}
+\end{center}
+Commanded 4.000\textdegree{} against 4.002\textdegree{} measured, and a return
+error of \textbf{one encoder count}. Motion was smooth and monotonic throughout.
+A subsequent 25\textdegree{} leg at speed~15 was equally exact
+($+25.003$\textdegree{}).
+
+This supersedes the 2026-08-25 conclusion (Section~\ref{sec:session-2026-08-25})
+that Joint C had an open path between the driver's output stage and the coils.
+It does not.
+
+\begin{caution}{\texttt{0xFD} pulses are 3200/motor-rev, not 16384 encoder counts}
+The \texttt{POSITION\_CONTROL} pulses field is in microsteps
+(200 full steps $\times$ 16), while the encoder reports 16384 counts/rev.
+Confusing the two is a $16384/3200 = 5.12\times$ magnitude error. For a
+67.82:1 joint, $N$ joint-degrees is
+$\text{round}(N \times 67.82 / 360 \times 3200)$ pulses.
+\end{caution}
+
+\subsection{The run that failed, and why}
+A 25\textdegree{} return leg stalled partway, leaving the joint at
+$+16.48$\textdegree{}. A retry at speed~30 behaved worse: two legs did not move
+at all and a third travelled fast and uncommanded. The driver then stopped
+answering the bus entirely.
+
+The cause was neither electrical nor a protocol fault --- \textbf{the motor had
+overheated and its power was switched off}. The link statistics showed zero
+bus-errors and the CANable was still enumerated, which is the signature of a
+powered-down node rather than a bus problem.
+
+\begin{caution}{Heat accumulates across trials, not within one}
+This run stacked a $\sim$40\,s move directly onto a three-leg retry with no
+cooling gap. No single move was aggressive; the accumulated duty cycle was.
+This is the same lesson recorded for Joint B --- space motion trials out and
+keep total energised time short, rather than judging each trial on its own.
+\end{caution}
+
+\subsection{New and changed scripts}
+\begin{itemize}
+    \item \texttt{joint\_endstop\_test.py} --- read-only live monitor of the IO
+    byte; prints only on change.
+    \item \texttt{joint\_endstop\_dwell.py} \textbf{(new)} --- timestamps every
+    edge and reports how long each trigger actually held, with a
+    SOLID/CHATTER/MARGINAL verdict. Written because the monitor above prints
+    only on change and carries no timestamps, so a 50\,ms tap and a two-second
+    hold are indistinguishable in its output.
+    \item \texttt{joint\_io\_diff.py} --- sweeps every documented read-only
+    register with the magnet off and on, for when the endstop does not appear
+    on \texttt{0x34} at all.
+    \item \texttt{joint\_magnet\_probe.py} --- checks whether a magnet disturbs
+    the encoder.
+\end{itemize}
+
+\begin{caution}{Reply frames are DLC 3; a DLC 2 frame is somebody's query}
+\texttt{joint\_endstop\_dwell.py} filters on \texttt{len(data) == 3}. The older
+scripts accept \texttt{>= 2}, so when two tools poll \texttt{can0} at once each
+can mistake the other's \emph{query} frame for a driver \emph{reply}. This
+briefly corrupted a reading during this session. Run one poller at a time until
+the older scripts are tightened.
+\end{caution}
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Let the motor cool, then confirm Joint C still answers and still
+    drives before anything else.
+    \item Apply the DLC-3 reply filter to \texttt{joint\_endstop\_test.py} and
+    \texttt{joint\_io\_diff.py}.
+    \item Establish which direction byte (\texttt{0x00} vs \texttt{0x80})
+    corresponds to clockwise at this joint --- it was never confirmed visually,
+    and \texttt{C\_joint} carries \texttt{inverted: true} in
+    \texttt{arctos\_controller.yaml}.
+    \item Only then enable \texttt{EndLimit} and attempt \texttt{GoHome}, with
+    the belt off: the manual states the shaft \emph{unlocks} when homing reaches
+    the left limit.
+    \item Update \texttt{motor\_driver.cpp}'s IO comment, which records the
+    pre-remap resting byte \texttt{0x01} and is now misleading.
+\end{itemize}
+
+
+\newpage
+\appendix
+\section*{Appendices --- standing reference}
+\addcontentsline{toc}{section}{Appendices --- standing reference}
+The material below is procedural rather than historical: it does not change from
+session to session, and it is kept here so the log itself stays chronological.
 
 \section{Introduction \& Core Concepts}
 Welcome to the Arctos Robotic Arm Integration Guide! This Standard Operating Procedure (SOP) will teach you how to wire, program, and control an industrial-style robotic arm using a communication framework called a \textbf{CAN Bus} (Controller Area Network) wrapped inside \textbf{ROS 2} (Robot Operating System).
@@ -263,453 +918,6 @@ ros2 topic echo /joint_states
 \end{lstlisting}
 
 Only after Step 3 has been repeated a few times with consistent, expected direction and magnitude -- and real travel limits have been established, e.g. by wiring and testing the hall-effect home sensor per the \texttt{ros2\_arctos} README -- should a joint move on to closed-loop position commands from a higher-level controller.
-
-\section{Session Log: Joint C Bring-Up Attempt (2026-08-25)}
-\label{sec:session-2026-08-25}
-Picking this up again: Joint C is wired, powered, and communicating over CAN, but \textbf{does not produce holding torque under any configuration tried today}. This section records exactly what was tried and ruled out, so the next session doesn't repeat it.
-
-\subsection{Confirmed working}
-\begin{itemize}
-    \item CAN link is solid: Step 2's reliability test passed cleanly (100\% response rate, 0 checksum failures, 0 encoder jitter across 200 samples).
-    \item CAN termination jumper near the CAN\_H/CAN\_L terminals was confirmed present and left installed -- correct, since this driver is currently one of only two nodes on the bus (CANable and this driver).
-    \item Main motor power measured at 24.9\,V DC at the driver -- normal and expected for this driver family (not the 249.6\,V initially misreported).
-    \item All four motor phase wires confirmed firmly seated; the driver-to-motor connector was additionally unplugged and re-seated mid-session. Neither changed the outcome.
-    \item The joint was reportedly calibrated previously. Calibration (\texttt{0x80 CALIBRATE}) was \textbf{not} re-run today because the motor is currently coupled to its gear train and cannot be decoupled right now -- \texttt{motor\_driver.cpp} explicitly warns calibration should be done unloaded, so re-running it under load was judged higher-risk than leaving it as-is.
-\end{itemize}
-
-\subsection{CAN ID: moved during the session -- always re-scan, never assume}
-\texttt{can\_id\_scan.py} first found Joint C responding at \texttt{0x01} (matching neither \texttt{arctos\_controller.yaml}'s \texttt{0x06} nor the older docs' \texttt{0x03}). Partway through the session the CAN ID was changed on the driver's own panel to \texttt{0x06}, confirmed again by re-scanning -- \textbf{do not assume either value going forward; run \texttt{can\_id\_scan.py} at the start of the next session before anything else.}
-
-\subsection{Ruled out: every CAN/panel-configurable setting tried so far}
-All of the following were tested (via direct CAN commands and/or the driver's own physical panel) with \textbf{no change in outcome} -- \texttt{READ\_ENABLE\_STATE (0x3A)} sometimes read back \texttt{1} (enabled) and sometimes \texttt{0} depending on mode, but in every single case the shaft span completely freely by hand with no detectable holding torque:
-\begin{itemize}
-    \item \textbf{Working mode}: \texttt{SR\_vFOC} (value 5, set both via \texttt{0x82} over CAN and later on the panel directly), \texttt{CR\_FOC}/\texttt{CR\_vFOC} (value 2, set on the panel), and \texttt{CR\_CLOSE} (value 1, set on the panel -- this is what Joint B's panel is documented to use).
-    \item \textbf{Working current}: the panel's stored default of 3000\,mA (roughly 2.5$\times$ this motor's documented 1.2\,A rating -- flagged and corrected), and 1200--1600\,mA (matching the documented rated current), both via \texttt{0x83} over CAN and via the panel.
-    \item \textbf{CAN ID}: \texttt{0x01} and \texttt{0x06} (see above).
-\end{itemize}
-\textbf{Important corroborating observation}: after several enable/hold cycles at up to 3000\,mA, \textbf{the motor showed no detectable warmth at all}. If current were actually reaching the coils, even without producing net rotation, resistive (I\textsuperscript{2}R) heating should be noticeable fairly quickly at that current. Its complete absence across every trial points away from a settings/calibration problem and toward an open or broken path between the driver's motor-output stage and the coils -- something no CAN command can fix.
-
-\subsection{Not yet tried / next session}
-\begin{itemize}
-    \item \textbf{Phase resistance check}: with power off, measure resistance across each of the two motor phase-wire pairs directly at the driver-to-motor connector (a healthy phase for this motor class should read roughly 1--5\,$\Omega$; open/infinite indicates a broken phase). Not done today -- no multimeter was available.
-    \item \textbf{Component swap test}: temporarily connect Joint B's known-working motor to Joint C's driver (or Joint C's motor to Joint B's driver) to isolate whether the fault is in the driver or in the motor/cable. Not attempted today.
-    \item \textbf{Live comparison against Joint B}: the written guide documents describing Joint B's setup (\texttt{arctos\_CAN\_ROS2\_SOP\_updated.tex}, the since-removed \texttt{arctos\_joint\_b\_guide.tex}, the cheat sheet) all still describe Joint B's own motion as unconfirmed as of Aug 19--20, even though Joint B has since been confirmed to move -- whatever actually fixed it isn't recorded in any document in this workspace. Check Joint B's driver's \emph{actual current} panel settings directly (working mode, current, CANRSP) and compare against whatever Joint C ends up needing, rather than trusting the stale written docs.
-    \item \texttt{SET\_ENABLE\_SETTINGS (0x85)} exists in \texttt{motor\_types.hpp} but its payload format is undocumented anywhere in this project and was deliberately not guessed at. If the panel exposes an equivalent enable-pin/enable-source setting, check it there instead.
-\end{itemize}
-
-\section{Session Log: Joint B Diagnostics \& Large-Move Test (2026-08-27)}
-\label{sec:session-2026-08-27}
-Two days after the Joint C session above, Joint C's own troubleshooting was paused (multimeter phase-resistance check and driver/motor swap test still pending -- see Section~\ref{sec:session-2026-08-25}), and Joint B was connected and powered instead to use as a known-working reference.
-
-\subsection{Joint B: confirmed healthy, with real holding torque}
-\texttt{can\_id\_scan.py} confirmed Joint B at \texttt{0x05} (matching every document, unlike Joint C's repeated mismatches). \texttt{joint\_reliability\_test.py} came back clean: 100\% response rate, 0 checksum failures, 1 raw count of jitter (noise floor) across 200 samples. Critically, Joint B's coils were found already enabled (\texttt{coils\_enabled=True} before this session sent anything), and \textbf{the shaft genuinely resisted turning by hand} -- real holding torque, unlike every attempt on Joint C.
-
-\subsection{Joint B's verified-working panel configuration}
-There is no \texttt{READ\_WORKING\_MODE} or \texttt{READ\_CURRENT} opcode anywhere in \texttt{motor\_types.hpp} -- these can only be read from the driver's own physical panel, not queried over CAN. Read directly off Joint B's screen while it was confirmed holding torque:
-\begin{table}[h]
-\centering
-\begin{tabular}{ll}
-\toprule
-\textbf{Setting} & \textbf{Joint B's verified-working value} \\ \midrule
-Working mode & \texttt{SR\_CLOSE} (enum value 4) \\
-Current & 1600\,mA (matches \texttt{motor\_types.hpp}'s own \texttt{working\_current\{1600\}} default exactly) \\
-CANRSP & Enable \\ \bottomrule
-\end{tabular}
-\caption{Joint B live-verified panel configuration, 2026-08-27.}
-\end{table}
-\textbf{This is a new working mode not yet tried on Joint C} -- Joint C testing on 2026-08-25 covered \texttt{SR\_vFOC} (5), \texttt{CR\_vFOC}/\texttt{CR\_FOC} (2), and \texttt{CR\_CLOSE} (1), but not \texttt{SR\_CLOSE} (4). Next Joint C session: set \texttt{SR\_CLOSE} + 1600\,mA + confirm CANRSP=Enable, then re-run the hold-enable test.
-
-\subsection{20-degree monitored move test on Joint B: real motion, but not reliably reproducible per-command}
-With Joint B confirmed healthy, a user-requested $\sim$20\textdegree{} joint move was run as 5 monitored steps of 4\textdegree{} each (Section~\ref{sec:errata}'s absolute-vs-relative ambiguity for \texttt{0xF5} was never resolved, so the incremental approach from Section~\ref{sec:safe-test} was used rather than a single blind large command). Starting position was $\approx 0.00\textdegree{}$, well inside the calibrated envelope (\texttt{home\_position}=$+12.87\textdegree{}$, \texttt{opposite\_limit}=$-24.23\textdegree{}$ per \texttt{arctos\_controller.yaml}).
-
-\textbf{Result: Step 1 produced real motion in the wrong direction and wrong magnitude} (commanded $+4\textdegree{}$, actual $-1.84\textdegree{}$), after which \textbf{Steps 2--5 produced essentially no further motion} (each $<0.001\textdegree{}$) despite each commanding a distinct new absolute target. No protection/stall flag was ever set; final position ($-1.85\textdegree{}$) stayed safely inside the envelope. The incremental/monitored design caught this after a small, safe excursion rather than after a blind full-magnitude commit.
-
-A follow-up test re-sent \texttt{ENABLE\_MOTOR} immediately before every \texttt{0xF5} and added a 3-second pause between steps, using smaller $2\textdegree{}$ steps. \textbf{This produced real motion of very close to the commanded magnitude on 2 of 3 steps} (Step 1: commanded $+2.0\textdegree{}$, actual $+1.96\textdegree{}$; Step 3: commanded $+2.0\textdegree{}$, actual $+1.96\textdegree{}$) -- a clear improvement over the first attempt, where only the very first command after enabling produced any real motion at all. \textbf{But Step 2 landed nowhere near its own commanded target}, instead landing within $\sim$13 raw counts of where the joint had been \emph{two steps earlier} -- even though the transmitted frame's position bytes were verified correct and distinct from the other two steps. This is not a simple sign-flip or absolute-vs-relative confusion; it looks like a command-queuing or timing race between consecutive \texttt{0xF5} frames, where a stale target sometimes wins over the freshly-sent one.
-
-\begin{caution}{Do not trust a single \texttt{0xF5} command's outcome without reading the encoder back}
-Across both tests today, magnitude and direction were unpredictable often enough (3 of 8 total commanded steps across both runs landed far from their target) that \textbf{every \texttt{0xF5} command must be followed by an encoder read to confirm where the joint actually ended up} before commanding anything further, exactly as the incremental procedure in Section~\ref{sec:safe-test} already does. No error or shaft-protection flag was set during any of these mismatches -- the driver does not flag this condition on its own.
-\end{caution}
-
-\subsection{\texttt{RELATIVE\_POSITION (0xF4)}: a single move matched commanded magnitude almost exactly}
-A single \texttt{0xF4} command (delta $+6173$ raw counts, $\approx 2.0^\circ$) produced $-1.98^\circ$ of real motion -- magnitude within 1\% of commanded, direction flipped as expected from \texttt{B\_joint}'s \texttt{inverted: true} flag (these raw test scripts deliberately do not apply that flip themselves; see the caution in Section~\ref{sec:joint-bringup}'s tiny-move script). This was the cleanest single-command result of the entire session.
-
-\textbf{But 3 consecutive \texttt{0xF4} commands (same delta, sent with only a single upfront \texttt{ENABLE\_MOTOR}), run twice, produced almost no motion on any of the 3 steps both times} ($<0.04^\circ$ per step) -- reproducing the same partial-execution pattern seen with \texttt{0xF5}, just now confirmed on \texttt{0xF4} too. This is not an absolute-vs-relative distinction; both commands show the same symptom.
-
-\subsection{\texttt{candump} capture: the driver genuinely acknowledges "movement started" -- but barely moves}
-A full unfiltered \texttt{candump -tz can0} capture during a 3-step \texttt{0xF4} sequence resolved an open question: is our own polling code silently discarding relevant frames? No. Every \texttt{F4 00 32 0A 00 18 1D 6A} command received a real, checksummed \texttt{F4 01 FA} response -- decoding \texttt{status=1} against \texttt{motor\_driver.cpp}'s own convention for \texttt{ABSOLUTE\_POSITION} (\texttt{case 1: // Movement started}), \textbf{the driver is telling us, correctly, that it started moving, every single time}. No other frames were ever sent besides our own read requests and this one ack. Meanwhile the raw encoder value crept by only $\sim$115 counts total across all three commands (each requesting 6173) -- roughly 2\% of one single step.
-
-\subsection{90-second and 60-second single-command watches: a genuine two-phase profile, not "just slow"}
-Watching a single \texttt{0xF4} command for much longer than the $\sim$5s used everywhere else in this project revealed the real shape of the response: a \textbf{real, fast burst} of motion in the first few seconds ($-737$ counts/s at \texttt{speed=50,accel=10}; $-428$ counts/s at a much gentler \texttt{speed=15,accel=1}), covering the large majority of whatever motion occurs, followed immediately by an \textbf{effective stop} -- creeping at noise-floor level ($\sim$0.3 counts/s) for the remaining $\sim$80+ seconds of each test, never approaching the full 6173-count target. Total captured: $-2353$ counts (38\%) at the faster settings, $-1301$ counts (21\%) at the gentler settings -- \textbf{a much gentler ramp did not fix it, and if anything captured less of the move}, ruling out "acceleration too aggressive for the load" as the primary cause. No \texttt{0x3E} shaft-protection flag was ever set in either test.
-
-\begin{caution}{A real sound was heard at the burst-to-stop transition, on two separate occasions}
-The user reported hearing something at the point where motion stopped, on two separate test runs. \textbf{Physical inspection ruled out an external obstruction}: no visible obstruction, the bare motor shaft (checked before the gearbox) moves freely and does not catch, and \textbf{the arm segment itself was confirmed to visibly move} during at least one test (ruling out total gearbox/coupling slippage, since the encoder is mounted on the motor's own shaft \emph{before} the gearbox and would not by itself prove the joint's output side actually moved). The combination points toward the motor \textbf{losing synchronization mid-move} (a stepper "chuff"/step-loss event) rather than a hard mechanical limit. \textbf{The motor was also reported "quite warm"} after this sequence of tests at 1600\,mA (documented rated current is 1.2\,A) -- testing was paused for a cool-down rather than continuing to add more energized time on top of that.
-\end{caution}
-
-\subsection{A promising lead: the real production system never sends one far-away target}
-Checking \texttt{arctos\_interface.cpp}'s \texttt{write()} function directly: it only calls \texttt{setJointPosition()} when the commanded position changes by more than \texttt{position\_tolerance\_} -- meaning in real operation, a \texttt{JointTrajectoryController} continuously publishes a smoothly interpolated, frequently-updated intermediate setpoint (at the controller's 100\,Hz \texttt{update\_rate}), and \texttt{write()} forwards each meaningfully-different point as a fresh CAN frame. \textbf{Every test in this entire session has instead sent one single far-away target and waited} -- the opposite of how this driver has ever actually been exercised by the real stack. The burst-then-stop pattern is consistent with the driver executing some bounded internal motion profile per command and requiring a fresh, nearby target to keep advancing, which one-shot far-away commands never provide. Not yet tested: \texttt{joint\_streamed\_move\_test.py} (added this session, not yet run) sends the total move as many small increments in rapid succession to test this directly.
-
-\subsection{A second promising lead: \texttt{POSITION\_CONTROL (0xFD)}, not \texttt{0xF4}/\texttt{0xF5}, is what the project's own working jog code actually uses}
-\texttt{POSITION\_CONTROL (0xFD)} is defined in \texttt{motor\_types.hpp} but \textbf{never referenced anywhere in \texttt{motor\_driver.cpp}} -- the C++ ROS~2 driver only ever uses \texttt{0xF5}. It \emph{is}, however, the command used by \texttt{scripts/set\_zero\_position.py}'s \texttt{relative\_motion\_by\_pulses()}, called repeatedly in a loop from \texttt{find\_home\_position()}, \texttt{find\_opposite\_limit()}, and \texttt{manual\_move\_joint()} -- i.e., exactly the repeated-small-jog pattern this session has been struggling to get right with \texttt{0xF4}/\texttt{0xF5}, and part of the one documented setup flow (\texttt{--init} in the \texttt{ros2\_arctos} README) that this project actually relies on working. \textbf{Its frame layout is structurally different}: a direction bit (\texttt{0x80}/\texttt{0x00}) is OR'd into the top of the speed-high byte, and its position field is in \textbf{microstep pulses} (200 full steps/rev $\times$ 16 microsteps/step $=$ 3200 pulses/motor-rev) rather than the 16384-count/rev encoder scale every other script in this document uses for \texttt{0xF4}/\texttt{0xF5}. Not yet tested: \texttt{joint\_position\_control\_test.py} (added this session, matches \texttt{set\_zero\_position.py}'s exact byte-packing) is ready to try next session.
-
-\subsection{New reusable scripts added this session}
-\begin{itemize}
-    \item \texttt{joint\_stepped\_move\_test.py} -- generalized N-step monitored move (absolute or relative, \texttt{--mode}), safety-band checked against calibrated \texttt{home\_position}/\texttt{opposite\_limit}, optional \texttt{--re-enable-each-step}.
-    \item \texttt{joint\_streamed\_move\_test.py} -- sends a total move as many rapid small \texttt{0xF4} increments instead of one command, to test the trajectory-streaming hypothesis above. Not yet run.
-    \item \texttt{joint\_position\_control\_test.py} -- \texttt{0xFD}-based jog test matching \texttt{set\_zero\_position.py}'s exact pulse-scale and direction-bit convention. Not yet run.
-\end{itemize}
-
-\subsection{Characterizing (not resolving) \texttt{0xFD}: a real, deterministic success signal with a still-unknown trigger}
-\texttt{joint\_position\_control\_test.py} (\texttt{0xFD}) revealed a protocol detail this whole investigation had been missing: \textbf{the driver sends an unsolicited two-frame status sequence per command} -- an immediate \texttt{FD 01} (\texttt{status=1}, "movement started", matching \texttt{motor\_driver.cpp}'s own convention) followed, sometimes, by a second \texttt{FD 02} (\texttt{status=2}, almost certainly "movement complete") arriving up to $\sim$425\,ms later. \textbf{Whether that second frame arrives correlates perfectly with whether the commanded magnitude is actually achieved} -- confirmed by directly matching a raw \texttt{candump} capture against per-step results across an 8-step test: both steps that received \texttt{FD 02} moved within 1\% of their commanded $1^\circ$; all six steps that received only \texttt{FD 01} moved less than $0.04^\circ$ each, several essentially zero.
-
-An initial 3-step test (re-enabling before every command) looked like a full resolution: individual steps of $+0.025^\circ$, $+1.974^\circ$, $+0.998^\circ$ summed to $+2.997^\circ$ against a $3.0^\circ$ total commanded ($99.9\%$), suggesting an incomplete command's shortfall carries forward into the next one. \textbf{This did not hold up when confirmed over a longer 8-step sequence}: steps 1--2 moved correctly (matching \texttt{FD 02} frames confirmed via \texttt{candump}), step 3 partially, and steps 4--8 essentially stopped entirely (each receiving only \texttt{FD 01}) despite an identical fresh-enable-before-each-command pattern -- total movement was $32\%$ of commanded, not $99.9\%$. A follow-up run logging \texttt{READ\_ERROR (0x39)} and \texttt{READ\_IO (0x34)} (the latter never queried anywhere else in this project) at fine resolution around a fresh sequence found \textbf{the very first command of that run failed too} (only \texttt{FD 01}, negligible motion) -- contradicting even the narrower "the first 1--2 commands always succeed" pattern.
-
-Neither additional status opcode explained the difference: \texttt{READ\_IO (0x34)} stayed completely constant (\texttt{[52, 1, 58]}) across every query in that run regardless of success or failure, and \texttt{READ\_ERROR (0x39)}'s trailing bytes changed on nearly every single query whether or not real motion occurred -- behavior more consistent with a free-running counter than a meaningful error/stall code. \texttt{READ\_SHAFT\_PROTECTION\_STATE (0x3E)} never once left its baseline value across any test this session, successful or not.
-
-A retry-on-\texttt{FD-02} mechanism (\texttt{joint\_position\_control\_test.py}, up to 4 retries/step, always re-enabling first) was then built and tested: in one run, \textbf{all 15 attempts across 3 steps got only \texttt{FD 01}, never a single \texttt{FD 02}} -- yet the joint still accumulated real, if uneven, motion across those retries. This broke the working theory that \texttt{FD 02} cleanly gates real motion, and pointed toward something more fundamental than a CAN-protocol quirk.
-
-\subsection{\texttt{ENABLE\_SHAFT\_PROTECTION (0x88)}: a promising lead that turned out to be a false-positive trap}
-\label{sec:shaft-protection-resolution}
-The user reported that manually assisting the joint by hand let a stuck move complete -- direct physical evidence pointing at genuine mechanical resistance. This led to checking whether \texttt{ENABLE\_SHAFT\_PROTECTION (0x88)} -- the command that actually turns on the "Tracking Error Protection Stall" feature described all the way back in Section~1 of this document -- had ever been sent. \textbf{It had not, anywhere in this project}: not in any test script this session, not in the real C++ \texttt{arctos\_hardware\_interface}, not in \texttt{set\_zero\_position.py}. Without it enabled, \texttt{READ\_SHAFT\_PROTECTION\_STATE (0x3E)} reads its baseline value regardless of whether a real stall is occurring.
-
-Sending \texttt{0x88 0x01} once, then repeating a $1^\circ$ move, appeared to confirm it immediately: \textbf{the very first move afterward tripped the flag} (status \texttt{0}\,$\to$\,\texttt{1}), with the joint having moved only $0.0017^\circ$ before the driver locked itself down (requiring a power-cycle of its main supply to clear, per Section~1). Raising current to 2000\,mA and separately trying a much gentler speed (15 vs.\ 50) both still tripped \emph{instantly} on the very first command at that setting -- a pattern insensitive to speed is itself a clue against a straightforward "not enough dynamic torque" stall, since that failure mode should get \emph{better}, not stay identically instant, as speed decreases.
-
-\textbf{The user's own comparison test settled it}: after checking (this time correctly) that this NEMA17's rated current is $1.2$\,A -- not $2.8$\,A, that number belongs to the unrelated NEMA23 originally installed on Joint X -- the exact same command that had just tripped at 2000\,mA and speed\,15 was re-sent \textbf{without} \texttt{0x88} enabled. \textbf{It moved almost perfectly}: $-1.0008^\circ$ against a $-1.0^\circ$ commanded target ($99.9\%$), with both \texttt{FD 01} and \texttt{FD 02} received. \textbf{This refutes "confirmed genuine stall" as this document previously claimed}: the identical command, current, and speed produced a clean, correct move the moment \texttt{0x88} was left off. \texttt{ENABLE\_SHAFT\_PROTECTION} on this driver appears capable of a false-positive trip -- possibly reacting to a normal, brief startup transient present at the start of every move -- not only a genuine sustained one.
-
-\begin{caution}{\texttt{0x88} is off by default in this package's scripts -- treat any trip as a lead, not proof}
-Both \texttt{joint\_position\_control\_test.py} and \texttt{joint\_stepped\_move\_test.py} now gate \texttt{ENABLE\_SHAFT\_PROTECTION} behind an explicit \texttt{--enable-shaft-protection} flag rather than sending it automatically, exactly because of the false-positive result above. If it does trip during real use, cross-check by re-running the identical command with it disabled before concluding a real stall occurred -- and remember a trip latches the driver down and costs a power-cycle to clear, so triggering one by default on every session is expensive for a signal that isn't fully trustworthy yet.
-\end{caution}
-
-\subsection{Final resolution: a real, localized mechanical catch, found and fixed by hand}
-\label{sec:joint-b-resolution}
-A proper statistical test settled the "incomplete move" question for good. \texttt{joint\_b\_statistical\_test.py} (20 reps of $\pm0.5^\circ$, alternating direction so the joint returns near its start each pair, at the correctly-rated $1.2$\,A, speed 15, \texttt{0x88} off) came back \textbf{20/20 (100\%)}, every rep within 1\% of commanded magnitude, no degradation between the first and second half. The same script re-run for \textbf{sustained one-direction} motion instead of alternating reproduced the "burst then stop" pattern exactly: 3--4 good reps, then a hard wall -- but critically, \textbf{starting a fresh sustained run already inside the previously-bad zone failed almost immediately} (1/10), while starting fresh from near $0^\circ$ took several good reps first. That is the signature of a fixed \emph{position}, not a command count, current level, or session-fatigue effect: alternating tests never accumulate enough one-directional travel to reach it, sustained tests do.
-
-That localized it to roughly $-2^\circ$ to $-5^\circ$ in this joint's raw-command coordinate. Told to check that specific range slowly and deliberately (rather than a quick static check, which had found nothing earlier), the user felt \textbf{small catches while rotating through it by hand} -- direct physical confirmation. Manually working the gears back and forth through the range (deliberately running the mechanism through the catch to seat/smooth it) was tried, retested, and iterated on the residual narrower sub-range that remained: an initial pass improved a $-5^\circ$ to $-1^\circ$ sustained test from 10\% to 70\% success; a second pass on the narrower $-2^\circ$ to $-1.7^\circ$ residual brought it to \textbf{100\% (10/10) in both directions}, every rep 98--101\% of commanded magnitude, confirmed across the full previously-affected range.
-
-\begin{caution}{The whole "incomplete move" investigation was a real mechanical fault, not a CAN/firmware issue}
-Every earlier hypothesis this session -- \texttt{0xF4} vs \texttt{0xF5} vs \texttt{0xFD}, working mode, current, re-enabling patterns, \texttt{FD 02} timing, shaft protection -- was chasing symptoms of one real, physical, position-localized mechanical catch. \texttt{FD 02} presence remained a reasonably good proxy for "did this specific command finish" throughout (it degraded exactly where the catch was), but the actual fix was mechanical, found only by a slow, deliberate hand-check of the specific failing range once statistical testing had localized it. If a similar pattern appears on Joint C or any future joint -- clean single moves, degrading specifically under sustained one-direction travel -- localize the range the same way (alternating vs.\ sustained statistical tests) before assuming it is a settings or protocol problem.
-\end{caution}
-
-\subsection{Next steps}
-\begin{itemize}
-    \item Run a broader confirmatory sweep across more of Joint B's full calibrated range (\texttt{home\_position} $+12.87^\circ$ to \texttt{opposite\_limit} $-24.23^\circ$), not just the $\sim$5--10$^\circ$ window tested so far, to rule out any other undiscovered catch elsewhere in the range.
-    \item Re-verify reliability at a more practical production speed (testing here used a gentle \texttt{speed=15}; confirm the fix holds at \texttt{speed=50} and above before relying on it for real trajectories).
-    \item \texttt{ENABLE\_SHAFT\_PROTECTION}'s false-positive behavior (Section~\ref{sec:shaft-protection-resolution}) is still unexplained and remains off by default -- this session's resolution did not depend on it and does not change that finding.
-    \item \textbf{Joint C}: try \texttt{SR\_CLOSE} + 1600\,mA + confirm CANRSP, matching Joint B's verified config. Phase-resistance check and motor/driver swap test are still pending from 2026-08-25. If similar incomplete-move symptoms appear, run the same alternating-vs-sustained statistical comparison early rather than assuming an electrical cause.
-\end{itemize}
-
-\section{Session Log: Large-Scale Motion, a Second Wall, and a Gear-Clearance Hypothesis (2026-08-27, continued)}
-\label{sec:session-2026-08-27-large-scale}
-With the $-2^\circ$ to $-5^\circ$ catch fixed and confirmed 100\% reliable in both directions (Section~\ref{sec:joint-b-resolution}), the user requested a much larger stress test: a full $360^\circ$ rotation of the gearbox output, six times, in a bench configuration confirmed by the user to allow free/unlimited rotation (this specific setup does not have the joint's usual $\sim$$37^\circ$ calibrated envelope or any crossing cable at risk).
-
-\subsection{A real shaft-protection trip, and a lesson about tool-output reliability}
-The first full-$360^\circ$ attempt produced no visible movement, and its terminal output was lost to a tool error -- a reminder that a lost or incomplete log means the actual hardware state must be re-verified from scratch (encoder position, enable state, protection state) before continuing, never assumed. Two subsequent attempts (a $30^\circ$ command, then a $15^\circ$ command) each tripped a \textbf{real} \texttt{ENABLE\_SHAFT\_PROTECTION} fault, visible directly on the driver's own physical display: \texttt{"Wrong Protect! Enter.."}. Unlike the earlier false-positive (Section~\ref{sec:shaft-protection-resolution}), \texttt{0x88} appears to have stayed armed across the power-cycles performed earlier in the day (unlike \texttt{ENABLE\_MOTOR}'s state, which does not persist) and tripped for real partway into these longer moves. Pressing \textbf{Enter on the driver's own panel cleared the trip both times -- no power-cycle was required}, updating the earlier assumption that a trip always needs a full power-cycle to clear. Explicitly sending \texttt{0x88 0x00} (disable) resolved the repeat trips.
-
-\subsection{The real behavior once protection was off: a stick-slip pattern, not a clean stall}
-With \texttt{ENABLE\_SHAFT\_PROTECTION} explicitly disabled, a $15^\circ$ single command eventually completed ($99.9\%$ of commanded distance) but took a full \textbf{60 seconds} instead of the 1--2 seconds small moves take, moving in a distinct \textbf{stick-slip} pattern: long stalls of 10--30+ seconds at a fixed position, punctuated by sudden bursts (observed rates up to $\sim$5500 counts/s) that advanced several degrees at once, repeating 5--6 times before finishing.
-
-\subsection{Isolating the cause: removing the belt did not change anything}
-To test whether this was resistance in the belt-driven wrist mechanism downstream of the gearbox, the belt was physically removed and the identical $15^\circ$ command re-run. \textbf{The stick-slip pattern was nearly identical} (same shape, similar total duration, if anything a longer single stall) with the belt off -- despite the motor+gearbox now driving strictly less load than before. \textbf{This rules out the belt-driven wrist mechanism as the cause} and points at the motor/gearbox assembly itself.
-
-\subsection{Chunking into small commands did not avoid it either -- it just found a different wall}
-Given every small isolated command earlier in the day was 100\% reliable, the same $15^\circ$ distance was tried as 15 separate $1^\circ$ chunked commands (\texttt{joint\_statistical\_reliability\_test.py}, sustained mode) rather than one large command. \textbf{Reps 1--6 were clean (99--101\% each), then rep 7 was partial and reps 8--15 completely failed} (no \texttt{FD 02}, negligible motion) -- a hard wall at a \emph{different} absolute position ($\sim$$38$--$39^\circ$ in this session's raw coordinate) than the originally-fixed $-2^\circ$ to $-5^\circ$ zone. Chunking did not solve the underlying problem; it simply relocated where the wall was encountered based on how far the sequence traveled before reaching it.
-
-\begin{caution}{This looks like multiple distributed resistance points, not one isolated defect}
-Between the original catch, this new wall roughly $40^\circ$ away, and a stick-slip pattern that persists across a $15^\circ$ span independent of belt/load, the evidence now points at resistance distributed across the gearbox's own rotational range rather than a single fixable spot. The stick-slip signature (long stall, then sudden release) is also more consistent with tight/insufficient gear-tooth clearance (backlash) than with a single point of debris or damage -- especially plausible for 3D-printed gears, where slight oversizing or ovality from the print process can cause mesh tightness to vary at different rotational positions.
-\end{caution}
-
-\subsection{Decision: reprint the gears with more clearance}
-Given the above, the user is decoupling the mechanism and reprinting the gears slightly smaller (more backlash) rather than continuing to locate and hand-work individual walls one at a time. This is a well-motivated fix given the evidence -- recommended refinements if pursued:
-\begin{itemize}
-    \item Increase clearance modestly, not aggressively -- too much backlash trades this problem for lost motion/imprecision in what is a precision joint.
-    \item If the current gears show visible ovality or warping, consider print orientation/settings, not just uniform scale-down, since that would better explain why some rotational positions bind and others do not.
-    \item Once reinstalled, re-verify across the \textbf{full range} using \texttt{joint\_statistical\_reliability\_test.py} in both \texttt{alternating} and \texttt{sustained} modes, and at multiple starting positions -- today's narrow-range tests gave false confidence more than once before a wider test surfaced the next issue.
-\end{itemize}
-
-\subsection{Next steps}
-\begin{itemize}
-    \item Motor is disabled and the mechanism is being decoupled for the gear reprint. \texttt{can0} was brought down and \texttt{slcand} stopped per the standard shutdown procedure (Section~\ref{sec:can-bringup}) before disconnecting the CANable.
-    \item After reassembly with new gears, re-run the full bring-up procedure (Section~\ref{sec:joint-bringup}) from Step 1 -- do not assume the CAN ID, calibration, or any prior finding still applies to the rebuilt mechanism.
-    \item If the stick-slip pattern persists even after the gear reprint, that would argue against the backlash hypothesis and toward the motor/driver itself (bearing, encoder mounting, or a firmware behavior specific to long single commands) -- keep the belt-off isolation result and the chunked-vs-single-command comparison as reference points for that follow-up.
-\end{itemize}
-
-\section{Session Log: Housing-Off Retest, Gear Reprint Plan, and a Definitive Motor Exoneration (2026-08-31)}
-\label{sec:session-2026-08-31}
-
-\subsection{Project now mirrored on GitHub}
-The custom tooling in this document (every script under \texttt{arctos\_can\_control}, the desktop control-panel app, CANable firmware images, and this SOP itself) is now published at \url{https://github.com/mdion2-maker/arctos_can_integration}. The upstream \texttt{ros2\_arctos} repository is deliberately not duplicated there, since it already exists as its own project.
-
-\subsection{Housing-off retest: the stick-slip pattern got worse, not better}
-With the gearbox's outer housing removed (belt state at time of test not confirmed), the same $15^\circ$ single-command test from Section~\ref{sec:session-2026-08-27-large-scale} was repeated with the user watching the exposed mechanism directly. The stall was \textbf{longer than any prior test} -- stuck at $25.7\%$ of the commanded distance for a full \textbf{72 seconds} before suddenly bursting free and completing the remaining $75\%$ in 4 seconds. The user again had to physically assist it to get moving -- \textbf{confirming a real, sustained mechanical resistance, not a brief transient}. Removing the housing did not reveal an externally visible culprit, suggesting the resistance is internal to the gearbox (a specific stage, a bearing, or the shaft coupling) rather than something the housing alone exposes.
-
-\subsection{Decision: reprint the gears in Tough PLA with corrective settings}
-Given brass was less immediately available than nylon for the user, and given the diagnosis pointed at print-tolerance/backlash rather than a fundamental material limit, the decision was to reprint in Tough PLA (specifically Bambu Lab's own PLA Tough, printed on a Bambu Lab H2D) rather than jumping to metal. Settings recommended, layered on top of Bambu Studio's own built-in PLA Tough filament preset (which should supply temps/cooling -- not overridden by generic figures):
-\begin{itemize}
-    \item \textbf{XY Contour Compensation: $-0.05$ to $-0.1$mm} (Process Settings $\to$ Advanced) -- shrinks the external tooth profile to loosen mesh tightness. This is the setting most directly targeted at the diagnosed problem; \textbf{XY Hole Compensation} (which affects internal cavities like the shaft bore, not the tooth profile) was left at 0 since the diagnosed resistance varies by rotational position -- consistent with tooth-mesh tightness, not a bore/shaft fit issue, which would be relatively constant regardless of angle.
-    \item Print orientation flat (gear axis vertical), not standing on edge -- reduces ovality, which would otherwise reproduce the same position-dependent binding pattern in the new part.
-    \item Layer height $0.12$--$0.16$mm, 4--6 walls (or 80--100\% infill given the small part size), slower outer-wall speed, moderate ($50$--$70\%$) part-cooling fan.
-\end{itemize}
-
-\subsection{Definitive result: the bare motor, fully decoupled, is completely clean}
-\label{sec:bare-motor-exoneration}
-With the motor mechanically disconnected from the gearbox entirely (no belt, no gear coupling, no load whatsoever), \texttt{joint\_statistical\_reliability\_test.py} was run twice using \texttt{--gear-ratio 1.0} (direct motor-shaft degrees, since no gearbox is attached to convert through):
-\begin{itemize}
-    \item \textbf{Alternating}: 20 reps of $\pm180^\circ$ -- \textbf{20/20 (100\%)}, every rep within $0.3^\circ$ of commanded.
-    \item \textbf{Sustained}: 10 reps of $360^\circ$ in the same direction (3600$^\circ$ total, 10 full motor revolutions) -- \textbf{10/10 (100\%)}, every single revolution within $0.15^\circ$ of exactly $360^\circ$, with no stall, no hesitation, and no stick-slip pattern at any point across the entire sequence.
-\end{itemize}
-
-\begin{caution}{The motor, encoder, driver, and CAN chain are exonerated -- the problem is confirmed 100\% mechanical, inside the gearbox}
-This is the cleanest, most controlled test in the entire investigation, and it came back perfect at a scale (10 full revolutions, sustained, in one direction) that reliably triggered the stick-slip pattern in every prior test with the gearbox attached. Every earlier hypothesis about the motor, its encoder mounting, the driver's current/mode settings, or CAN-level command timing can now be set aside. The resistance is definitively located in the gearbox mechanism itself -- fully consistent with, and now strongly supporting, the gear-reprint plan above as the correct fix rather than a guess.
-\end{caution}
-
-\subsection{Next steps}
-\begin{itemize}
-    \item Complete the gear reprint with the settings above; inspect the new gears for visible ovality/warping before installing (a quick visual/caliper check across a few diameters) rather than only discovering it via another multi-hour CAN test cycle.
-    \item Reassemble, then re-run the full verification sequence from Section~\ref{sec:joint-b-resolution} onward: \texttt{can\_id\_scan.py} (do not assume the ID survived reassembly), \texttt{joint\_reliability\_test.py}, then \texttt{joint\_statistical\_reliability\_test.py} in both modes across as much of the range as practical, motor-only baseline (Section~\ref{sec:bare-motor-exoneration}) already established as the reference for "clean."
-    \item If the sustained-mode test still shows any stick-slip after reassembly with the new gears, that would point at a bearing or shaft-alignment issue distinct from tooth-mesh clearance, since the mesh-tightness hypothesis would have been directly addressed by the reprint.
-\end{itemize}
-
-\section{Session Log: Joint C -- \texttt{SR\_CLOSE} Applied, Then the Same Motor-Exoneration Pattern as Joint B}
-\label{sec:session-joint-c-followup}
-
-\subsection{\texttt{SR\_CLOSE} + 1600\,mA + confirmed CANRSP: still no torque connected}
-Applying Joint B's verified-working panel configuration to Joint C (Section~\ref{sec:session-2026-08-27}) -- \texttt{SR\_CLOSE}, 1600\,mA, CANRSP enabled -- did \textbf{not} produce holding torque while connected to the gearbox; the shaft still span freely. Joint C has now been tried in every documented working mode (\texttt{SR\_vFOC}, \texttt{CR\_vFOC}/\texttt{CR\_FOC}, \texttt{CR\_CLOSE}, \texttt{SR\_CLOSE}) across 1200--3000\,mA, with zero holding torque in any combination while connected -- ruling out a simple settings mismatch as the sole explanation.
-
-\subsection{A confirmed real move -- then inconsistent torque}
-Watching the panel for a fault message (the technique that found Joint B's shaft-protection trip) revealed no error, but did surface something new: after unplugging and replugging the motor connector, a commanded $0.5^\circ$ move executed almost perfectly ($0.4963^\circ$ actual, confirmed independently by both the CAN-side encoder and the driver's own panel display, which reports motor-shaft-scale degrees rather than joint-scale). \textbf{This is Joint C's first confirmed real movement across the entire investigation.} Immediately afterward, though, holding-torque checks were inconsistent -- spinning freely both right after the move and during two subsequent 10s/20s enable-and-hold tests (the second including deliberately wiggling the connector, which changed nothing) -- while the connector was still attached to the gearbox.
-
-\subsection{Bare-motor test: fully exonerated, exactly like Joint B}
-With the motor mechanically disconnected from the gearbox (mirroring Section~\ref{sec:bare-motor-exoneration}'s test on Joint B), using \texttt{joint\_statistical\_reliability\_test.py} with \texttt{--gear-ratio 1.0}:
-\begin{itemize}
-    \item \textbf{Alternating}: 20 reps of $\pm180^\circ$ -- \textbf{20/20 (100\%)}, all within $0.15^\circ$ of commanded.
-    \item \textbf{Sustained}: 10 reps of $360^\circ$ (3600$^\circ$ total, 10 full revolutions) -- \textbf{10/10 (100\%)}, essentially exact.
-    \item \textbf{Static holding torque, isolated}: enabled and held for 10s with no move command -- \textbf{the shaft resisted turning by hand}, confirmed real holding torque, with the motor noticeably warm afterward (consistent with genuine current draw).
-\end{itemize}
-
-\begin{caution}{Joint C's motor and driver are healthy -- every failure observed was downstream of the connector, in the gearbox}
-This flips the earlier "loose connector" theory: a genuinely flaky connector should have caused failures during this 30-command bare-motor test too, and it did not -- perfect reliability throughout, for both motion and static holding torque. The far more consistent explanation across every observation this session: \textbf{the motor and driver are completely fine}, and the one successful move plus the otherwise-consistent "spins freely" results were the gearbox itself intermittently binding -- occasionally overcome by an active move command, but resisting during passive holding. This is the same root-cause category as Joint B (Section~\ref{sec:bare-motor-exoneration}), on the same 67.82:1 gearbox family.
-\end{caution}
-
-\subsection{Next steps}
-\begin{itemize}
-    \item Let the motor cool (it was warm after the holding-torque confirmation) before further enable tests.
-    \item Reconnect Joint C's gearbox and repeat the alternating-vs-sustained comparison used to diagnose Joint B -- if the same stick-slip pattern appears, treat it with the same hands-on approach (localize by feel, work the gears, or reprint with the same corrective settings from Section~\ref{sec:session-2026-08-31}).
-    \item Given both Joint B and Joint C -- built from the same driver/gearbox family -- have now independently converged on "motor and driver clean, gearbox at fault," consider whether this points at a systematic issue in how this gearbox family is manufactured/printed rather than two unrelated one-off defects.
-\end{itemize}
-
-\section{Session Log: Joint A -- CAN Confirmed, Bare-Motor Exoneration, and Two Script Bugs Found}
-\label{sec:session-joint-a}
-
-\subsection{Hardware identity: matches the original Joint X spec, but this driver is the CAN variant}
-A newly-connected joint, described as NEMA23, $1.8\,\mathrm{Nm}$, $2.8\,\mathrm{A}$, was labeled ``Joint A'' by the user -- the exact motor spec originally recorded for ``Joint X'' at the very start of this project (Section~\ref{sec:session-2026-08-25}, the joint whose driver turned out to be an RS485 variant, not CAN). Before assuming this was the same failed unit, the bus was scanned directly rather than trusting either the driver panel or \texttt{arctos\_controller.yaml}'s \texttt{A\_joint} entry (which is a \texttt{MKS\_42D}, NEMA17-class config and does not match this motor's spec at all). The scan found exactly one responder, at CAN ID \texttt{0x01}, with a clean checksum-verified reply -- matching \texttt{X\_joint} in the real config (\texttt{motor\_id: 1}, \texttt{gear\_ratio: 13.5}, \texttt{hardware\_type: MKS\_57D}), not \texttt{A\_joint}. This confirms two things at once: the naming the user is using for this joint does not match the letter-keyed config, and -- more importantly -- \textbf{this is a genuine CAN-responding driver}, not a repeat of the original RS485 hardware mismatch.
-
-\subsection{Bare-motor verification, decoupled from any belt/drivetrain}
-With nothing attached (the motor was not connected to any belt/pulley at the time of testing), the full diagnostic ladder used previously on Joints B and C was repeated:
-\begin{itemize}
-    \item \textbf{Link quality} (\texttt{joint\_reliability\_test.py}): 200/200 responses (100\%), 0 CRC failures, 0 encoder jitter while stationary, mean round-trip latency 3.3\,ms.
-    \item \textbf{First motion} (\texttt{joint\_micro\_move\_test.py}): commanded 300 raw counts ($\approx 0.488^\circ$), observed 301 raw counts ($\approx 0.490^\circ$) -- essentially exact, no slip.
-    \item \textbf{Monitored 3-step move} (\texttt{joint\_stepped\_move\_test.py}): three $2^\circ$ relative steps, each landing within about 1\% of commanded, no missed steps.
-    \item \textbf{Alternating statistical test} (\texttt{joint\_statistical\_reliability\_test.py}, \texttt{--gear-ratio 1.0}): 30 reps of $3^\circ$ -- \textbf{30/30 (100\%)}, both halves 100\%.
-    \item \textbf{Sustained statistical test}, run faster and with a bigger step per the user's request (speed 40 instead of the usual gentle 15, inter-rep pause cut from 2.0\,s to 0.5\,s, $25^\circ$ per rep): \textbf{10/10 (100\%)}, both halves 100\%, total travel $248.9^\circ$.
-\end{itemize}
-Same clean profile as both prior bare-motor exonerations (Joint B, Section~\ref{sec:bare-motor-exoneration}; Joint C, Section~\ref{sec:session-joint-c-followup}): this motor, driver, encoder, and CAN link are all healthy.
-
-\begin{caution}{Two real bugs found in the shared test scripts, not hardware faults -- both fixed}
-Two issues surfaced while testing Joint A that would affect any joint with the same characteristics, and have already been corrected in \texttt{joint\_stepped\_move\_test.py}, \texttt{joint\_statistical\_reliability\_test.py}, \texttt{joint\_long\_move\_monitor.py}, \texttt{joint\_position\_control\_test.py}, and \texttt{joint\_streamed\_move\_test.py}:
-\begin{enumerate}
-    \item \textbf{Safe-band ordering assumed \texttt{home\_position > opposite\_limit}.} The band was computed as \texttt{lo = opposite\_limit + margin}, \texttt{hi = home\_position - margin}. This only forms a valid ascending range when \texttt{home\_position > opposite\_limit}, which happens to be true for Joints B and C but is \emph{false} for Joint A/X (\texttt{home\_position} $= -173.5^\circ$, \texttt{opposite\_limit} $= +157.5^\circ$). With the old code this made \texttt{lo > hi}, so \emph{every} move was rejected as leaving the safe band regardless of direction. Fixed by using \texttt{lo = min(home, opposite) + margin}, \texttt{hi = max(home, opposite) - margin}, which is correct for either convention.
-    \item \textbf{The safe-band projection and the \texttt{pct} reliability metric assumed commanded sign equals physical sign.} For any joint with \texttt{inverted: true} in \texttt{arctos\_controller.yaml} (true for every joint in this project: X, Y, A, B, C), the encoder consistently moves opposite to the commanded direction byte. The pre-move safe-band check projected the \emph{commanded} sign forward, so it could both block a command that would have physically moved back into the safe band, and -- more seriously -- fail to catch a command that was nominally moving away from a limit but physically moving toward one. It also made every printed \texttt{pct} value read as roughly $-100\%$ instead of $+100\%$ on perfectly good moves (visible throughout the alternating-test output in this session), which could be mistaken for a systematic problem. Fixed by adding an opt-in \texttt{--inverted} flag to \texttt{joint\_statistical\_reliability\_test.py} that flips the sign used only for the projection and the \texttt{pct} comparison, leaving the actual command byte sent to the driver unchanged.
-\end{enumerate}
-Neither issue reflects a hardware problem; both were caught because Joint A's config has a different sign convention (\texttt{home\_position \textless\ opposite\_limit}) than Joints B and C, which is exactly the kind of case that ought to be checked before trusting a script that was only validated against one convention.
-\end{caution}
-
-\subsection{Next steps}
-\begin{itemize}
-    \item Reconnect Joint A to its belt/drivetrain and repeat the alternating-vs-sustained comparison at realistic (coupled) load, watching specifically for the same stick-slip signature found on Joints B and C.
-    \item Pass \texttt{--inverted} on every future \texttt{joint\_statistical\_reliability\_test.py} run for a joint marked \texttt{inverted: true} in \texttt{arctos\_controller.yaml} -- i.e. essentially always, in this project.
-    \item Resolve the naming mismatch between the user's ``Joint A/B/C/X'' labels and the config's letter-keyed \texttt{A\_joint}--\texttt{C\_joint}/\texttt{X\_joint} entries before it causes a real mix-up; CAN ID \texttt{0x01} is this joint's actual identity regardless of which label is used for it.
-\end{itemize}
-
-\section{Session Log: Joint A Belt-Coupled Verification (2026-08-31, continued)}
-\label{sec:session-joint-a-coupled}
-
-With the belt reconnected, the same three-step ladder used on the bare motor (Section~\ref{sec:session-joint-a}) was repeated at real load, using the actual \texttt{gear\_ratio: 13.5}:
-\begin{itemize}
-    \item \textbf{Supervised first motion} (\texttt{joint\_micro\_move\_test.py}): commanded 300 raw counts, observed exactly 300 -- no slip.
-    \item \textbf{Alternating statistical test} (30 reps, $3^\circ$ steps, \texttt{--inverted}): \textbf{30/30 (100\%)}, both halves 100\%, every rep within about 1\% of commanded, net drift essentially zero.
-    \item \textbf{Sustained statistical test} (10 reps, $5^\circ$ steps): \textbf{10/10 (100\%)}, both halves 100\%, 99--101\% accuracy on every rep across the full $\sim$50$^\circ$ traveled.
-\end{itemize}
-No stick-slip signature at all under real belt load -- Joint A is the first joint in this project to pass both the bare-motor and belt-coupled comparisons cleanly on the first attempt. Per the standing project plan, Joint B testing resumes once confidence in Joint A is established; that is what the next session log covers.
-
-\section{Session Log: Joint B -- Interrupted Calibration, a Runaway-Looking Symptom, and Recovery}
-\label{sec:session-joint-b-recalibration}
-
-\begin{caution}{This section documents a real safety incident, not just a diagnostic result}
-The motor was disconnected from its gearbox at the time (bare shaft, no load, no obstruction), which is what kept this from being worse than it looked. Read this before changing a working mode on any driver in this project.
-\end{caution}
-
-\subsection{What happened}
-While reconnecting to Joint B, the user changed the driver's working mode to \texttt{SR\_CLOSE} on the panel. The motor then began spinning fast and continuously and did not stop on its own. Unplugging the CANable adapter (removing the CAN link) did \emph{not} stop it -- the user had to cut power to the motor/driver directly. On a second attempt to resolve it (letting the panel's own routine run again), the same thing happened, this time also accompanied by an audible squeak, prompting an immediate power cut again. At each point the correct action was taken: cut motor power first, ask questions about root cause second.
-
-\subsection{Diagnosis}
-Two details narrowed this down:
-\begin{itemize}
-    \item The motor was confirmed bare (no gearbox attached) and unobstructed both times, which ruled out the squeak being a load-bearing mechanical strain (e.g. a gear grinding) -- consistent instead with normal stepper coil whine at the speed the routine was running at.
-    \item The panel's position LED tracked rotation normally while it was happening, meaning the encoder itself was being read correctly -- this argued against a corrupted/garbage encoder value driving a genuine closed-loop runaway, and for a simpler explanation: \textbf{changing the working mode to \texttt{SR\_CLOSE} auto-triggers an encoder self-calibration routine on this driver, and that routine was interrupted (twice) before it could finish.} Some MKS firmware re-attempts an incomplete calibration on every subsequent power-up, which matches the user's report that it happened again, immediately, the next time it was powered on.
-\end{itemize}
-
-\subsection{Recovery}
-Since the motor was bare and unobstructed, the risk of letting the routine run was mechanical-shaft-safety only (keep hands, hair, and loose clothing clear of a fast-spinning exposed shaft), not load/damage risk. The recommendation was to power on, touch nothing, and time it rather than interrupt again. This worked: the calibration completed on its own, the working mode was kept at \texttt{SR\_CLOSE}, and the user also changed the driver's CAN ID to \texttt{0x02} on the panel at the same time.
-
-\begin{caution}{Changing a driver's working mode can trigger a real, uninterruptible-looking calibration -- let it finish}
-If a driver starts moving on its own immediately after a working-mode change and won't stop, the first move is always to cut power to the motor/driver itself -- unplugging only the CAN adapter does not stop a firmware-internal routine like this. But if the motor is confirmed bare/unobstructed, letting a suspected calibration routine run to completion (rather than interrupting it again) is usually the faster path back to a working state, since an interrupted calibration can leave the driver re-attempting it on every power-up rather than settling.
-\end{caution}
-
-\subsection{Post-recalibration verification}
-The new CAN ID was verified by scan, not assumed from the panel (per the project's standing rule): \texttt{can\_id\_scan.py} found exactly one responder, at \texttt{0x02}, confirming the panel's reported value was correct this time. With the motor still bare (\texttt{--gear-ratio 1.0}):
-\begin{itemize}
-    \item \textbf{Link quality}: 200/200 responses (100\%), 0 CRC failures, 0 encoder jitter, mean latency 2.7\,ms.
-    \item \textbf{First motion}: commanded 300 raw counts, observed 304 -- within about 1.3\%, no slip.
-\end{itemize}
-An alternating-vs-sustained statistical comparison followed, bare motor, \texttt{--gear-ratio 1.0}, using generous $\pm 360^\circ$ testing bounds rather than the real narrow joint-level limits (which do not apply while decoupled):
-\begin{itemize}
-    \item \textbf{Alternating} (30 reps, $3^\circ$ steps): every single rep landed within 0--2\% of commanded magnitude, with no degradation across the run -- but \textbf{0/30 reps ever reported the \texttt{FD 02} status byte} this script treats as its success signal; every rep instead only ever showed status \texttt{1}.
-    \item \textbf{Sustained} (10 reps, $20^\circ$ steps): the same pattern held -- 99--101\% accuracy on every rep, $200.3^\circ$ traveled with zero degradation, and again \textbf{0/10 reps reported \texttt{FD 02}}. Consistent across both modes, this looks like a stable behavioral change rather than a one-off fluke.
-\end{itemize}
-
-\begin{caution}{Perfect motion, but the \texttt{FD 02} success status never appeared -- don't misread this as 0\% reliability}
-This is not a repeat of the earlier false-positive lesson from \texttt{ENABLE\_SHAFT\_PROTECTION}, but it rhymes with it: the SOP already documents (Section~\ref{sec:session-2026-08-27}, ``Characterizing \texttt{0xFD}'') that this status byte is a real signal with a still-unknown trigger condition, not a required precondition for real motion. Here, every rep's actual encoder-measured movement matched the commanded value almost exactly, alternating direction cleanly 30 times in a row with zero drift -- physically, this is a perfect result. The status frames simply never included the specific byte this script's success check looks for, only a different one (\texttt{1}) that Joint A's equivalent tests always paired with \texttt{2}. Whether this is a benign side effect of the just-completed recalibration and CAN ID change, or a genuine behavioral difference worth tracking, is not yet known -- but the fix is not to distrust the motion, it is to stop treating \texttt{FD 02} as the only valid definition of success in this script.
-\end{caution}
-
-\section{Session Log: A Real Runaway, Traced to an Absolute-Position Encoding Bug, Not the Gearbox}
-\label{sec:session-absolute-position-bug}
-
-\begin{caution}{A confirmed software bug, not a mechanical or calibration fault -- but it produced a genuinely dangerous incident}
-With Joint B's reprinted gearbox reconnected, a routine supervised first-motion test (\texttt{joint\_micro\_move\_test.py}, commanding a tiny $\sim 0.1^\circ$ nudge) instead produced a large, continuous, non-settling motion that did not stop within the test's 5-second watch window. The user had to cut motor power directly. This is documented in full because the same class of bug is present in three other scripts and needs to be understood, not just patched around.
-\end{caution}
-
-\subsection{What the test actually showed}
-The encoder trace during the 5-second window was smooth and strictly monotonic (roughly $-2080$ raw counts per 0.5\,s sample, ten samples straight, no deceleration) -- not noise, not a stall, not a protocol error. It looked exactly like a real, large, deliberately-commanded move that simply hadn't finished yet. The command box itself confirmed this: commanded 300 raw counts ($\approx 0.097^\circ$), observed $-20{,}871$ raw counts ($\approx -6.76^\circ$) in just those five seconds, with no sign of nearing a target.
-
-\subsection{Root cause: absolute-position encoding breaks once the raw counter has drifted far from zero}
-\texttt{joint\_micro\_move\_test.py} computed an absolute target (\texttt{target\_raw = raw0 + delta\_counts}) and packed it into the driver's 3-byte position field with a plain \texttt{int(target\_raw) \& 0xFFFFFF} -- ordinary two's-complement truncation. This has been in the script since it was written and never caused a problem before, because every prior test on every joint started from a raw position near zero (a few hundred counts at most), where two's-complement truncation of a small number is indistinguishable from the driver's real encoding.
-
-Joint B's raw absolute counter, however, had drifted to roughly $-274{,}000$ counts by this point in the session -- the accumulated result of the earlier bare-motor alternating and sustained tests (Section~\ref{sec:session-joint-b-recalibration}), none of which ever re-homed or zeroed the joint, because none of them needed to: they all use \emph{relative} moves, so absolute drift never mattered to them. But \texttt{joint\_micro\_move\_test.py}'s absolute-target math did depend on it. Packing $-273{,}639$ (start $-273{,}939$ plus the 300-count nudge) via plain 24-bit two's complement produces the byte pattern \texttt{FB D3 19}. Decoded the way this driver family actually reads a position field -- a direction bit in the top bit of the first byte, and a 23-bit \emph{unsigned magnitude} in the rest, not full two's-complement -- that same bit pattern means direction bit set, magnitude $0{,}x7BD319 = 8{,}111{,}385$ pulses, i.e. roughly $178{,}220^\circ$. A 300-count nudge was, by encoding accident, transmitted as a request to travel almost 500 revolutions. That fully explains a large, smooth, non-settling motion with no error reported -- the driver was doing exactly what it was (wrongly) told.
-
-\subsection{Fix applied}
-\texttt{joint\_micro\_move\_test.py} was switched from \texttt{ABSOLUTE\_POSITION (0xF5)} with a raw absolute-target packing to \texttt{POSITION\_CONTROL (0xFD)} with a direction byte plus an always-\emph{positive} magnitude -- the same pattern already proven safe across every joint in this project via \texttt{joint\_statistical\_reliability\_test.py} and \texttt{joint\_position\_control\_test.py} (thousands of commands, zero encoding failures, across Joints A, B, and C). This pattern never references the joint's current absolute position at all, so it cannot repeat this failure regardless of how far a joint's raw counter has drifted.
-
-\begin{caution}{The first version of this fix was still off by 5.12x -- a units mismatch, not a repeat of the encoding bug}
-A follow-up guarded re-test (small move, active 1$^\circ$ safety cutoff polled continuously rather than just watched) landed at $0.4976^\circ$ against a commanded $0.0972^\circ$ -- a real, repeatable $5.12\times$ overshoot, though bounded and settled, not a runaway. Cause: \texttt{POSITION\_CONTROL}'s pulses field is in \emph{motor microstep} scale (\texttt{MICROSTEPS\_PER\_MOTOR\_REV = 3200}, i.e. 200 full steps $\times$ 16 microsteps), not the 16384-count encoder scale \texttt{joint\_micro\_move\_test.py}'s \texttt{--delta-counts} was already defined in. The first fix passed the encoder-scale number straight through as pulses; $16384 / 3200 = 5.12$, matching the overshoot exactly. Corrected by converting: \texttt{pulses = round(delta\_counts * MICROSTEPS\_PER\_MOTOR\_REV / ENCODER\_CPR)}, matching the conversion already used correctly in \texttt{joint\_statistical\_reliability\_test.py}. Re-tested clean: $0.0969^\circ$ actual against $0.0972^\circ$ commanded, settled immediately, no cutoff needed.
-\end{caution}
-
-\begin{caution}{Three other scripts share the same class of risk and have not yet been fixed}
-A repo-wide check found the identical unguarded \texttt{\& 0xFFFFFF} packing in:
-\begin{itemize}
-    \item \textbf{\texttt{joint\_stepped\_move\_test.py}, \texttt{--mode absolute}} -- packs a full absolute \texttt{target\_raw}, the exact same pattern that just failed. Unverified and should be treated as unsafe on any joint with a large or unknown drifted position until fixed.
-    \item \textbf{\texttt{joint\_stepped\_move\_test.py}, \texttt{--mode relative}, and \texttt{joint\_streamed\_move\_test.py}'s \texttt{move\_relative()}} -- pack a possibly-\emph{negative} relative delta the same unguarded way, rather than splitting sign into a direction byte and magnitude. Whether a small negative delta is actually misread the same way has not been empirically confirmed either way; treat as unverified rather than assumed-safe.
-    \item \textbf{\texttt{mks\_driver.py}} -- has the same absolute-target packing pattern (\texttt{move\_relative\_degrees}), guarded only by a hardcoded $\pm 71{,}500$-pulse boundary check with no stated derivation. This file is already documented elsewhere in this SOP as containing placeholder/untrustworthy calibration numbers copied from an unrelated joint; it also has an outright bug independent of this one (\texttt{\_\_init\_\_} references \texttt{self.PULSES\_PER\_MOTOR\_DEGREE}, which is never defined, so instantiating the class would raise \texttt{AttributeError}). Do not treat its $\pm 71{,}500$ guard as a validated safe boundary -- it has not been re-derived or confirmed here.
-\end{itemize}
-Until these are fixed and verified, prefer \texttt{joint\_statistical\_reliability\_test.py} / \texttt{joint\_position\_control\_test.py} for any real motion test -- they are the only scripts in this project with an extensive, confirmed-safe track record for exactly this reason.
-\end{caution}
-
-\subsection{A note on the earlier Joint B ``partial burst then stop'' investigation}
-\texttt{joint\_stepped\_move\_test.py}'s own header notes it was built while chasing Joint B's original 2026-08-27 ``commands get acknowledged but only produce a partial burst of motion'' behavior, using \texttt{--mode absolute} test runs among others. That investigation's eventual conclusion -- a real, physical gear-mesh clearance problem, confirmed by hand and by the proven-safe 0xFD statistical tests -- is not in doubt; it was independently corroborated multiple ways, including bare-motor exoneration. But any individual \texttt{--mode absolute} result from that session should now be read with this encoding risk in mind, in case it added noise on top of the real mechanical signal.
-
-\subsection{Next steps}
-\begin{itemize}
-    \item Fix \texttt{joint\_stepped\_move\_test.py} and \texttt{joint\_streamed\_move\_test.py} to use the same direction-byte-plus-magnitude \texttt{POSITION\_CONTROL} pattern, then re-verify each against a joint with a deliberately large drifted position before trusting them again.
-    \item Do not use \texttt{mks\_driver.py} as-is; it needs the same fix plus resolution of the undefined-attribute bug before it can be trusted for anything.
-    \item Consider adding a periodic homing/re-zero step to the bare-motor statistical tests specifically to keep raw counters from drifting this far in the first place, independent of fixing the encoding bug itself.
-\end{itemize}
-
-\section{Session Log: Joint B Real-Load Verification, After Re-Establishing a Safe Envelope by Hand}
-\label{sec:session-joint-b-real-load}
-
-\subsection{The calibrated home/opposite-limit values were no longer trustworthy}
-Before testing at real gearbox load, a fresh position read showed the joint at $-175.14^\circ$ by the software's math -- far outside \texttt{arctos\_controller.yaml}'s real calibrated range for this joint ($-24.23^\circ$ to $12.87^\circ$, about $37^\circ$ wide). This is a direct consequence of every bare-motor test in this session (Sections~\ref{sec:session-joint-b-recalibration}, \ref{sec:session-absolute-position-bug}) being relative-move-only and never re-homing: hundreds of degrees of untracked rotation accumulated, so the raw counter is no longer anchored to the joint's real physical zero. With the gearbox now attached and a real, narrow mechanical range, trusting the stale calibrated bounds against this drifted reading could have driven the joint into a hard stop with no warning, since the safe-band check only protects against what it's told, not against a wrong reference frame.
-
-\subsection{Re-establishing a safe envelope by hand instead of trusting stale calibration}
-Rather than guess, the joint's physical position was checked by hand: with coils disabled, the user reported it currently sits pointing straight up, with roughly $30^\circ$ of free travel available in each direction before a hard stop. That number, not the stale calibrated values, was used to build the test's safe band: a fresh raw read gave $-175.144^\circ$, and \texttt{--home-position-deg -205.14 --opposite-limit-deg -145.14} (current position $\pm 30^\circ$) was passed to \texttt{joint\_statistical\_reliability\_test.py}, giving roughly $\pm 27^\circ$ of usable room after the script's default $3^\circ$ margin.
-
-\subsection{Results: clean at real load, matching the bare-motor result exactly}
-\begin{itemize}
-    \item \textbf{Alternating} (20 reps, $2^\circ$ steps): \textbf{100\% magnitude accuracy on all 20 reps}, net drift $+0.0023^\circ$ over the whole run -- effectively zero.
-    \item \textbf{Sustained} (5 reps, $5^\circ$ steps, chosen to stay within the $\pm 27^\circ$ confirmed-safe room): \textbf{100\% accuracy on all 5 reps} (99.97--100\% each), $25.0^\circ$ traveled essentially exactly as commanded, ending at $-200.14^\circ$, comfortably inside the safe envelope.
-\end{itemize}
-As with every test since the recalibration (Section~\ref{sec:session-joint-b-recalibration}), \texttt{FD 02} never appeared in either run -- consistent with the already-documented behavioral change, not a new concern. No stick-slip signature at all under real load. Joint B now matches Joint A: clean on both the bare-motor and real-load comparisons, on the reprinted gearbox.
-
-\begin{caution}{Re-home Joint B properly before trusting absolute-degree commands again}
-This session's safe envelope was built from a hand-estimated $\pm 30^\circ$, which was good enough for a supervised statistical test but is not a substitute for real homing. Before running anything that trusts \texttt{arctos\_controller.yaml}'s \texttt{home\_position}/\texttt{opposite\_limit} values again (or before any unsupervised/ROS-driven motion), re-home Joint B properly so its raw counter is re-anchored to a known physical reference.
-\end{caution}
-
-\begin{caution}{\texttt{ENABLE\_MOTOR 0x00} does not appear to interrupt a \texttt{POSITION\_CONTROL} move already in progress}
-Returning Joint B to its confirmed "straight up" reference position ($-175.14^\circ$) after the tests above, a guarded single relative move undershot its 8-second monitoring window and the script disabled the motor (\texttt{0xF3 0x00}) and exited while still $14^\circ$ short. Re-running the same script moments later found the joint had continued on toward the target well past where monitoring stopped -- the move kept executing on the driver's own internal control loop after the disable command was sent, not just after the script exited. \textbf{Disabling coils does not appear to be an immediate stop for a move already underway; \texttt{EMERGENCY\_STOP (0xF7)} is the actual immediate-halt command.} This session it resolved safely only because the residual motion happened to continue in the correct direction and stayed inside the confirmed-safe envelope the whole time. Any future guarded test that might need to actually interrupt an in-flight \texttt{POSITION\_CONTROL} move should send \texttt{0xF7}, not rely on disabling coils.
-\end{caution}
-
-\begin{caution}{Correction: everything labeled ``Joint B'' in this session (Sections~\ref{sec:session-joint-b-recalibration}--\ref{sec:session-joint-b-real-load}) was actually Y\_joint, not B\_joint}
-After this session's testing was done, the user realized the naming had drifted: the physical unit being called ``Joint B'' throughout the recalibration incident, the absolute-position encoding bug, and the real-load verification was actually \texttt{Y\_joint} (\texttt{motor\_id: 2, gear\_ratio: 150.0, hardware\_type: MKS\_57D}) -- confirmed by the fact that the CAN ID found during that session, \texttt{0x02}, is exactly Y\_joint's real \texttt{motor\_id}, not B\_joint's (\texttt{5}). Separately, ``Joint A'' throughout this document is confirmed correct as \texttt{X\_joint} (already used with the right \texttt{gear\_ratio: 13.5} throughout).
-
-The real B\_joint (\texttt{motor\_id: 5, gear\_ratio: 67.82, MKS\_42D}) is the joint referred to earlier in this document under the original Joint B gear-backlash investigation (Sections~\ref{sec:session-2026-08-27}--\ref{sec:bare-motor-exoneration}), from before ``Joint A'' existed in this project's vocabulary -- that work is unaffected by this correction.
-
-\textbf{Practical impact of this session's mislabeling:} every script run against the mislabeled joint used \texttt{--gear-ratio 67.82} (B\_joint's value) instead of the correct \texttt{150.0} (Y\_joint's value). Since \texttt{joint\_deg = raw \texttt{*} 360 / 16384 / gear\_ratio}, using the smaller gear ratio made every reported ``joint degree'' figure read about $150/67.82 \approx 2.21\times$ \emph{larger} than the true physical rotation -- the real motion was smaller than reported, not larger. The hand-measured $\pm 30^\circ$ safe envelope (Section~\ref{sec:session-joint-b-real-load}) was likewise computed in the wrong-scaled unit, which made the enforced raw-count safety bound \emph{tighter} than the true physical limit, not looser. No part of this correction indicates an actual safety violation; it indicates the reported degree figures for that joint in this session should not be trusted at face value, and any future work on this specific unit should use \texttt{gear\_ratio: 150.0} and Y\_joint's real calibrated \texttt{home\_position}/\texttt{opposite\_limit} (\texttt{-0.854}/\texttt{2.006} rad) going forward.
-\end{caution}
-
-\section{Session Log: Joint Z Bring-Up (Bare Motor)}
-\label{sec:session-joint-z}
-
-\subsection{Settings and calibration}
-Panel configured to \texttt{SR\_CLOSE}, 1600\,mA (matching the working baseline established for the other MKS\_42D-family joints), and calibrated -- this time letting the routine run all the way to completion and settle on its own, per the lesson learned from Y\_joint's interrupted-calibration incident (Section~\ref{sec:session-joint-b-recalibration}). CAN ID verified by scan (not assumed from the panel) as \texttt{0x03}, matching \texttt{Z\_joint}'s real \texttt{motor\_id} in \texttt{arctos\_controller.yaml} exactly -- no naming mismatch this time.
-
-\begin{caution}{Initial reliability/first-motion results were reported at the wrong scale, then corrected}
-Before confirming the motor was bare (decoupled from its external gearbox), the reliability and first-motion tests were run with \texttt{--gear-ratio 150.0} out of habit. Once confirmed bare, this was corrected to \texttt{--gear-ratio 1.0} for the remaining tests, matching this project's standing convention for every other bare-motor test. The first-motion result was re-derived: the commanded 300 raw-count move was actually $\approx 6.50^\circ$ of real motor-shaft rotation (observed $\approx$ -296 counts $\approx -6.50^\circ$), not the $\pm 0.04^\circ$ originally reported at the wrong scale. As with the Y\_joint mislabeling above, the raw CAN commands and actual physical motion were correct throughout -- only the degree-unit reporting was off, caught before any statistical testing was run at the wrong scale.
-\end{caution}
-
-\subsection{Results: clean on the bare motor}
-\begin{itemize}
-    \item \textbf{Link quality}: 200/200 responses (100\%), 0 CRC failures, 0 encoder jitter, mean latency 3.4\,ms.
-    \item \textbf{First motion} (corrected scale): $\approx 6.50^\circ$ commanded and observed, matching closely.
-    \item \textbf{Alternating} (30 reps, $3^\circ$ steps, \texttt{--gear-ratio 1.0}, \texttt{--inverted}): \textbf{30/30 (100\%)}, both halves 100\%, consistent $\sim$97\% magnitude accuracy, \texttt{FD 02} present on every rep (matching Joint A/X's normal behavior, unlike Y\_joint's post-recalibration change).
-    \item \textbf{Sustained} (10 reps, $20^\circ$ steps): \textbf{10/10 (100\%)}, both halves 100\%, 98--102\% accuracy, $200.4^\circ$ traveled with no degradation.
-\end{itemize}
-Joint Z is clean on the bare motor, matching the pattern for every other joint verified so far in this project. Not yet tested at real load (still decoupled from its external gearbox/drivetrain at time of writing).
-
-\section{Session Log: Joint Z Real-Load Testing -- A Chain of Apparent Mechanical Problems, All Traced to One Test-Script Bug}
-\label{sec:session-joint-z-real-load}
-
-\subsection{Safety envelope: a correction mid-session, then a real hard-stop scare avoided}
-With the belt attached, the user initially reported $\pm 20^\circ$ of room by hand, then corrected this to $\pm 10^\circ$ before any test that mattered was run at the wider figure. The correction mattered: the first alternating test at very slow speed (5) drifted a net $-10^\circ$ over 10 reps and initially looked like it might explain a suspected gear-backlash problem -- but re-examining it against the corrected $\pm 10^\circ$ figure, the final position landed almost exactly on the true boundary, raising the possibility the joint had simply driven into a real hard stop rather than exhibited a mechanical fault. The user confirmed nothing was jammed and manually recentered the joint, reporting the same $\pm 10^\circ$ figure from the new middle.
-
-\subsection{The reversal problem was real, not a hard-stop artifact}
-Retesting at the same slow speed from a freshly-centered, properly-verified-safe position reproduced the identical failure pattern almost exactly (\texttt{dir=+} moving $\approx -0.81^\circ$ against a $-2.0^\circ$ command; \texttt{dir=-} moving $\approx -1.19^\circ$ against a $+2.0^\circ$ command -- wrong sign, not just wrong magnitude), aborting safely via the safe-band check partway through. Since this was nowhere near a hard stop this time, the hard-stop explanation was ruled out: this is a real, repeatable behavior specific to alternating direction under load at very slow speed.
-
-\subsection{A clarifying single-direction test, then full resolution at normal speed}
-A single sustained-direction corrective move (recentering the joint, still at speed 5) progressed smoothly and accurately toward its target with no sign of the reversal problem -- confirming the issue is specific to \emph{alternating} direction, not slow speed in general. Retesting the alternating comparison at normal speed (15) from the same properly-centered, verified-safe position came back completely clean: \textbf{10/10 (100\%)}, every rep within 0.3\% of commanded magnitude, net drift $+0.0001^\circ$.
-
-\begin{caution}{Working theory at the time: backlash needing momentum to close on reversal -- see full retraction below}
-This was the working explanation reached in-session for the slow-speed alternating result above. It turned out to be the wrong explanation for a related-looking but distinct set of symptoms found next (the sustained-test "stiction" pattern), which was fully retracted after finding a real script bug. Whether \emph{this specific} slow-speed alternating finding is itself an artifact of the same bug, rather than a real backlash/momentum effect, is addressed at the end of this section -- read to the end before trusting either conclusion.
-\end{caution}
-
-\subsection{A ``stiction'' pattern that was actually a test-script bug -- full retraction}
-The sustained tests that followed (documented in earlier drafts of this section) appeared to show real partial-completion behavior at $3^\circ$ and $5^\circ$ steps -- undershooting on a move's first attempt, sometimes recovering on a second attempt, sometimes not -- and were provisionally attributed to mechanical stiction (static friction higher than kinetic, needing a "warm-up" move to fully engage). \textbf{This conclusion was wrong, and has been fully retracted.}
-
-The actual cause: \texttt{joint\_statistical\_reliability\_test.py} read the encoder exactly once, a fixed \texttt{--status-timeout-s} (default 4.0\,s) after sending each move, regardless of whether the move had actually finished. On Joint Z's gear ratio (150, much larger than Joint B's 67.82 this script was originally tuned against), moves of a few degrees at normal speed genuinely take 5--8+ seconds to complete. Every rep was therefore measured mid-motion. The shortfall then finished silently during the 2-second inter-rep pause, uncounted, and got folded into the \emph{next} rep's reported delta -- fabricating a completely artificial "first move undershoots, later moves recover" pattern that had nothing to do with the joint's real mechanical behavior.
-
-This was confirmed conclusively by watching two isolated single moves (a $5^\circ$ and a $3^\circ$) continuously for up to 20 seconds with no fixed cutoff: both reached their commanded distance almost exactly ($-5.0010^\circ$ and $+3.0022^\circ$ respectively) and held rock-steady afterward -- they were never stuck or resisting, they simply took longer than the old test script waited.
-
-\textbf{Fix applied:} \texttt{joint\_statistical\_reliability\_test.py} now polls the encoder until the position genuinely stops changing (three consecutive stable readings) instead of reading once on a fixed clock, with \texttt{--status-timeout-s} repurposed as a generous upper bound (default raised to 15\,s) rather than a fixed wait. Re-running both step sizes with the fixed script came back completely clean: $3^\circ$ sustained, 5 reps, \textbf{100\% accuracy on every single rep including the first} ($-3.0045^\circ$ to $-2.9962^\circ$), with \texttt{FD 02} present on every rep this time; $5^\circ$ sustained, 6 reps, \textbf{100\% accuracy on every rep} ($+4.9970^\circ$ to $+5.0029^\circ$), \texttt{FD 02} present throughout. There is no stiction, no step-size dependency, and no completion problem at normal speed on this joint -- the joint has been behaving correctly the entire time.
-
-\begin{caution}{Re-verified: the slow-speed "reversal problem" was the same bug too -- fully retracted}
-Re-run with the fixed script (10 reps, $2^\circ$, alternating, speed 5): \textbf{10/10 (100\%) magnitude accuracy in both directions}, \texttt{FD 02} present on 9 of 10 reps. No wrong-sign moves, no partial completion, no reversal problem of any kind. The entire ``low-speed reversal failure'' finding earlier in this section was the identical fixed-timeout measurement bug, not a real behavior -- there is nothing wrong with Joint Z at slow speed either.
-\end{caution}
-
-\subsection{Conclusion: Joint Z has no mechanical issues at any speed or step size tested}
-Every real-load finding in this section that suggested a mechanical problem -- the low-speed reversal failure, the step-size-dependent under-completion, the ``stiction'' recovery pattern -- was the same single root cause: the test script measuring position before slower moves had actually finished. With that fixed, Joint Z is clean across bare-motor and real-load testing, both directions, multiple step sizes, and both slow and normal speed. This is a good example of why an odd result should prompt checking the measurement method before concluding the hardware is at fault.
-
-\subsection{Next steps}
-\begin{itemize}
-    \item Apply the same settle-detection scrutiny to any other joint's earlier results that used the old fixed-timeout version of this script, particularly any with a large \texttt{gear\_ratio} where moves take longer to complete (Y\_joint at 150) -- Joints A/X (13.5) and B/C (67.82) have smaller gear ratios and shorter move durations, making this less likely to have affected them, but it has not been explicitly re-checked.
-    \item Sync the fixed \texttt{joint\_statistical\_reliability\_test.py} to the public repo and note the fix in its own history, not just here.
-\end{itemize}
 
 \section{The Python Code Stack}
 To build an automated system, we separate our project into a clean library file (\texttt{mks\_driver.py}) that handles the mathematical scaling transformations, and an execution test wrapper (\texttt{run\_arm.py}).
