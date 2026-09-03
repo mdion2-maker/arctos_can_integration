@@ -687,16 +687,42 @@ briefly corrupted a reading during this session. Run one poller at a time until
 the older scripts are tightened.
 \end{caution}
 
+\subsection{Direction byte mapping, confirmed by eye}
+Measured after the motor had cooled and the driver had been power-cycled, using a
+slow 5\textdegree{} move at speed~5 in each direction with the rotation watched at
+the joint itself:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Direction byte} & \textbf{Encoder} & \textbf{Physical rotation} \\ \midrule
+\texttt{0x00} & counts up   & counter-clockwise \\
+\texttt{0x80} & counts down & \textbf{clockwise} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Clockwise is \texttt{0x80}.} Note that the 4\textdegree{} and
+25\textdegree{} runs recorded above used \texttt{0x00} for their first leg, so they
+travelled \emph{counter-clockwise} first, not clockwise --- the encoder sign alone
+had been taken as ``forward'' without anyone checking the joint.
+
+Motion at speed~5 was smooth and linear, about 700 counts per half-second with no
+roughness, and both legs settled at exactly $\pm5.005$\textdegree{}: 15448 counts
+out against 15447 back, a one-count difference.
+
+\begin{caution}{The vantage point was not recorded}
+``Clockwise'' for a wrist joint depends on which side it is viewed from, and the
+observer's position was not written down at the time. Before this mapping is relied
+on for anything that matters, confirm it again and record the vantage with it.
+\end{caution}
+
 \subsection{Next steps}
 \begin{itemize}
     \item Let the motor cool, then confirm Joint C still answers and still
     drives before anything else.
     \item Apply the DLC-3 reply filter to \texttt{joint\_endstop\_test.py} and
     \texttt{joint\_io\_diff.py}.
-    \item Establish which direction byte (\texttt{0x00} vs \texttt{0x80})
-    corresponds to clockwise at this joint --- it was never confirmed visually,
-    and \texttt{C\_joint} carries \texttt{inverted: true} in
-    \texttt{arctos\_controller.yaml}.
     \item Only then enable \texttt{EndLimit} and attempt \texttt{GoHome}, with
     the belt off: the manual states the shaft \emph{unlocks} when homing reaches
     the left limit.
