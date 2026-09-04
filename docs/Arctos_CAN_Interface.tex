@@ -611,6 +611,43 @@ was found. If an endstop reads nothing, re-send \texttt{9E 01} before suspecting
 wiring.
 \end{caution}
 
+\subsection{Making a homing reference repeatable}
+An endstop's trigger point is only a usable reference if it is approached the same
+way every time. Two effects, both measured:
+
+\textbf{Detection zones are asymmetric, and the sharp edge is directional.} A
+magnet holds an input asserted over a band, not at a point. On Joint X that band
+runs 10--17\textdegree{} wide, and backing out of it releases the input after only
+\textbf{0.062\textdegree{}}. So the edge encountered on the way \emph{in} is
+sharp and repeatable, while the far side is a plateau. Approaching from the other
+direction trips somewhere in the band and gives a different answer each time.
+Fix the approach direction and make it part of the procedure. Zone widths are
+per-joint: Joint Y's releases in 2--4\textdegree{} where X's takes 10--17.
+
+\textbf{Trigger position drifts with approach speed.} The same endstop on Joint Y,
+approached clockwise twice, reported \texttt{raw} 411950 at speed 50 and 411633 at
+speed 25 --- the faster approach recording the trigger further along in the
+direction of travel. That is detection-and-stop latency. The bias is small and
+systematic, so a joint homed at varying speeds has a reference that moves by
+roughly that much. Standardise on one slow speed for the final approach.
+
+Repeatability with both controlled: \textbf{0.046\textdegree{}} across a
+165\textdegree{} round trip.
+
+\textbf{Two-phase approach.} Creeping the whole way is slow --- Joint Y's full
+envelope takes about 165\,s at speed 25. Running all but the last
+15\textdegree{} at speed 150 and creeping the remainder covers it in about
+40\,s, with the same precision where it matters. Park the joint clear of the
+detection zone afterwards, or it sits on an asserted limit at its own home.
+
+\begin{caution}{Absolute positions do not survive a power cycle}
+The encoder counter zeroes at power-on, and the arm may be moved between sessions.
+A previously recorded trigger position is a rough expectation, never a target ---
+Joint X's endstop was 112\textdegree{} from the start position one session and
+173.8\textdegree{} the next. Re-establish the reference by searching, then
+\texttt{SET\_AXIS\_ZERO (0x92)} so subsequent readings are joint angles.
+\end{caution}
+
 \subsection{Homing}
 \texttt{SET\_HOME\_PARAMS (0x90)} carries \texttt{homeTrig} (0 low, 1 high),
 \texttt{homeDir} (0 CW, 1 CCW), a 16-bit \texttt{homeSpeed} in rpm, and

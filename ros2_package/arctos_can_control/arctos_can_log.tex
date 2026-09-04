@@ -899,7 +899,14 @@ a fault to the wire between them --- agreement means the path is good,
 disagreement points straight at the cable.
 \end{caution}
 
-\subsection{Y's verified sensor mapping}
+\subsection{Y's sensor mapping \textmd{\normalsize --- SUPERSEDED, see
+Section~\ref{sec:session-2026-09-04}}}
+\begin{caution}{This mapping is obsolete. Do not use it.}
+The sensor wires were changed after this session. The mapping below describes a
+configuration that no longer exists; \textbf{Section~\ref{sec:session-2026-09-04}
+has the current one, and it is reversed from this}. Kept only to explain why the
+2026-09-04 entry contradicts it.
+\end{caution}
 With both connectors corrected, a magnet at each sensor in turn:
 
 \begin{center}
@@ -947,6 +954,138 @@ calling it end-effector motion (Section~\ref{sec:session-2026-09-03}).
 None of the Y search distances in this entry should be read as arm positions.
 The sensor mapping above stands --- it was established by hand with a magnet, not
 by moving the joint.
+
+\section{2026-09-04 --- X homed, and Y's gears confirmed holding}
+\label{sec:session-2026-09-04}
+\textbf{This entry supersedes the Joint Y findings of 2026-09-03.} The sensor
+wires were changed between the two sessions, so yesterday's mapping describes a
+configuration that no longer exists. Where the two disagree, this one is correct.
+
+\subsection{Joint X: homed and zeroed}
+X's single endstop was located by supervised clockwise search at
+\textbf{173.8\textdegree{}} clockwise of the power-on position --- considerably
+further than the previous session, because the arm had been repositioned in
+between. Absolute encoder positions do not survive a power cycle or a session, so
+a search is the only way to re-establish the reference.
+
+The homing procedure, now proven:
+
+\begin{enumerate}
+    \item Search \textbf{clockwise} until \texttt{IN\_2} (bit 1) drops.
+    \item That trigger edge is the reference.
+    \item Move clockwise clear of the detection zone.
+    \item \texttt{SET\_AXIS\_ZERO (0x92)} at the resting place.
+\end{enumerate}
+
+\begin{caution}{Approach direction is part of the procedure, not a detail}
+X's detection zone is \textbf{asymmetric}. Approached clockwise the bit drops at a
+sharp, repeatable edge; past that edge the magnet keeps the input asserted for a
+further 10--17\textdegree{}, and backing off counter-clockwise releases it in
+\textbf{0.062\textdegree{}}. So the trigger edge is only sharp on a clockwise
+approach --- coming the other way trips somewhere in a 10\textdegree{}-wide band
+and gives a different answer every time. Always home X clockwise.
+\end{caution}
+
+Home was initially set at trigger $+10$\textdegree{}, which sits \emph{inside} the
+detection zone --- X would park on an asserted limit. It was moved to
+trigger $+30$\textdegree{}, clear of the zone, and zeroed there with \texttt{0x92}
+(reply \texttt{92 01}). X now reads \texttt{raw = 0} at home, so its encoder is a
+real joint angle rather than an offset from an arbitrary power-on point.
+
+Two incidental findings: \texttt{EndLimit} did \textbf{not} block clockwise travel
+out of a triggered \texttt{IN\_2}, so this joint is not in fact fenced by the
+driver; and X still has \textbf{only one endstop}, so the warning against ever
+sending \texttt{GoHome} to it stands.
+
+\subsection{Joint Y: the gears hold, and both limits are real}
+The decisive result of the day. Yesterday's searches swept
+$\sim$150\textdegree{} without a single trigger because the cycloidal gears were
+slipping --- the motor turned, the arm did not. Today \textbf{both endstops
+triggered from commanded motion}, which is output-side evidence: the magnet rides
+on the moving element, so reaching a sensor proves the arm rotated.
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Input} & \textbf{Bit} & \textbf{Limit} \\ \midrule
+\texttt{IN\_1} & 0 & \textbf{clockwise} \\
+\texttt{IN\_2} & 1 & \textbf{counter-clockwise} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{This is the reverse of the 2026-09-03 mapping}, consistent with the sensor
+wires having been swapped since. Direction bytes on Y: \texttt{0x80} clockwise,
+\texttt{0x00} counter-clockwise.
+
+\subsection{Y's real envelope: 165.5\textdegree{}, not $\pm20$\textdegree{}}
+With both limits located by movement:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\texttt{IN\_2} trigger (counter-clockwise) & \texttt{raw} $= -718132$ \\
+\texttt{IN\_1} trigger (clockwise)         & \texttt{raw} $= +411950$ \\
+separation & 1{,}130{,}082 counts $=$ \textbf{165.5\textdegree{}} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The earlier $\pm20$\textdegree{} estimate was made while the gears were slipping,
+so the arm was travelling a small fraction of what the encoder reported. That is
+why the envelope looked narrow.
+
+\subsection{Repeatability, and a speed-dependent bias}
+\texttt{IN\_1} was reached twice, both times clockwise, on either side of a
+165\textdegree{} round trip: \texttt{raw} 411950 the first time and 411633 the
+second. \textbf{Repeatability 0.046\textdegree{}} (317 counts) --- a solid homing
+reference.
+
+\begin{caution}{Home at a consistent speed}
+The two approaches differed: speed 50 the first time, speed 25 the second, and the
+faster one reported the trigger \emph{further along} in the direction of travel.
+That is detection-and-stop latency --- the quicker you are moving when the bit
+drops, the further you have gone by the time it is recorded. The bias is small but
+systematic, so mixing approach speeds spreads the reference by roughly that much
+each time. Standardise on the slow creep for the final approach.
+\end{caution}
+
+\texttt{IN\_1}'s zone releases 2--4\textdegree{} back from its trigger edge,
+noticeably narrower than X's 10--17\textdegree{}.
+
+\subsection{Two-phase approach: fast, then creep}
+Traversing Y's full envelope at creep speed takes around 165\,s. Splitting it ---
+150.5\textdegree{} at speed 150, then the last 15\textdegree{} at speed 25 ---
+covers the same ground in about \textbf{40\,s} while keeping the final approach
+slow enough to be precise and safe. Worth using for any long approach.
+
+\subsection{Improvements to the search tooling}
+\begin{itemize}
+    \item \textbf{Endstop aborts now re-arm.} A limit reading low at the start of
+    a move is ignored, so a joint can back off a triggered switch --- but it is
+    re-armed the instant it reads high again. Previously the only option was to
+    disable endstop aborts entirely for the whole move, which left the joint
+    unprotected for its full travel. Observed working: \texttt{IN\_2} re-armed
+    three seconds into a 150\textdegree{} run and covered the remaining
+    147\textdegree{}.
+    \item \textbf{Stall detection} on every move, since a hard stop or gears
+    slipping to a halt moves no endstop bit and is otherwise invisible.
+    \item A single generic search script now takes CAN ID, gear ratio, distance,
+    direction and speed, replacing the per-joint copies.
+\end{itemize}
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Y is characterised but not homed or zeroed. Decide where its home
+    should sit relative to \texttt{IN\_1} --- clear of the detection zone, as X's
+    now is --- and set it with \texttt{0x92}.
+    \item Confirm whether X and Y still energise at power-on. \texttt{0x3A} read
+    enable $=1$ on both after this session's power cycle, but that flag reports
+    intent rather than coils and has been wrong before. It needs a hand on the
+    motor.
+    \item Re-check X's detection zone width now that home has moved to trigger
+    $+30$\textdegree{}.
+\end{itemize}
 
 \newpage
 \appendix
