@@ -1018,22 +1018,64 @@ on the moving element, so reaching a sensor proves the arm rotated.
 wires having been swapped since. Direction bytes on Y: \texttt{0x80} clockwise,
 \texttt{0x00} counter-clockwise.
 
-\subsection{Y's real envelope: 165.5\textdegree{}, not $\pm20$\textdegree{}}
-With both limits located by movement:
+\subsection{Y's real envelope: 158.24\textdegree{}, and how much the gears slip}
+\label{sec:y-envelope}
+A first measurement with both limits located by movement gave
+\textbf{165.5\textdegree{}}. \textbf{That figure was itself inflated by gear
+slip}, and so was a later one. Repeating the calibration at different traverse
+speeds produced a monotonic result:
 
 \begin{center}
-\begin{tabular}{ll}
+\begin{tabular}{lll}
 \toprule
-\texttt{IN\_2} trigger (counter-clockwise) & \texttt{raw} $= -718132$ \\
-\texttt{IN\_1} trigger (clockwise)         & \texttt{raw} $= +411950$ \\
-separation & 1{,}130{,}082 counts $=$ \textbf{165.5\textdegree{}} \\
+\textbf{Traverse speed} & \textbf{Measured separation} & \textbf{vs creep} \\ \midrule
+150            & 178.550\textdegree{} & $+20.3$\textdegree{} \\
+$\sim$50       & 165.540\textdegree{} & $+7.3$\textdegree{} \\
+25 (run 1)     & 158.228\textdegree{} & --- \\
+25 (run 2)     & \textbf{158.258\textdegree{}} & $+0.030$\textdegree{} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-The earlier $\pm20$\textdegree{} estimate was made while the gears were slipping,
-so the arm was travelling a small fraction of what the encoder reported. That is
-why the envelope looked narrow.
+The slower the traverse, the smaller the measured envelope --- which is exactly
+what slip predicts. Slip means the motor turns \emph{more} than the joint, so
+covering a fixed physical distance between two sensors needs extra motor
+rotation, and the encoder, sitting upstream of the reduction, reports a distance
+larger than reality.
+
+\begin{caution}{Two creep runs agreeing to 0.030\textdegree{} is what makes this conclusive}
+Slip is stochastic; it would not reproduce to three hundredths of a degree across
+two independent full traverses, some 300\textdegree{} of travel in total. That
+level of agreement means the gears are transmitting essentially perfectly at
+speed 25, so \textbf{158.24\textdegree{} is the true envelope} and the faster
+figures are measurement artefacts rather than alternative estimates.
+\end{caution}
+
+So the drivetrain is not broken, it has an operating envelope: \textbf{the gears
+hold at speed 25 and slip progressively above it}, losing roughly
+7\textdegree{} over a traverse at speed 50 and 20\textdegree{} at 150. That is
+the question this joint was being run to answer. Runs at 50 and 100 would bracket
+the onset more precisely; the method is proven and each run takes about six
+minutes.
+
+The original $\pm20$\textdegree{} estimate came from the session where the gears
+were slipping badly enough that the arm barely moved at all, which is why the
+envelope looked so narrow.
+
+\begin{caution}{Approach both limits at the same speed, or the number is meaningless}
+Trigger position varies with approach speed, and the two effects compound in the
+same direction: a faster approach records the clockwise limit further clockwise
+\emph{and} the counter-clockwise limit further counter-clockwise, inflating the
+separation from both ends. The 165.5\textdegree{} figure mixed a speed-50 approach
+with a speed-25 one. Latency alone is small --- 0.046\textdegree{} per trigger ---
+so it cannot explain a 7\textdegree{} discrepancy, but it is one more reason to
+fix the approach speed and keep it fixed.
+\end{caution}
+
+Thermally this was uneventful: roughly 150 motor revolutions across the two
+calibration runs, twelve minutes of continuous travel, and the motor was still
+cool to the touch afterwards. A clean drivetrain at this speed, not a marginal
+one.
 
 \subsection{Repeatability, and a speed-dependent bias}
 \texttt{IN\_1} was reached twice, both times clockwise, on either side of a
@@ -1076,9 +1118,13 @@ slow enough to be precise and safe. Worth using for any long approach.
 
 \subsection{Next steps}
 \begin{itemize}
-    \item Y is characterised but not homed or zeroed. Decide where its home
+    \item Y is characterised (158.24\textdegree{} envelope,
+    Section~\ref{sec:y-envelope}) but not homed or zeroed. Decide where its home
     should sit relative to \texttt{IN\_1} --- clear of the detection zone, as X's
     now is --- and set it with \texttt{0x92}.
+    \item Bracket the slip onset with calibration runs at speed 50 and 100. The
+    gears hold at 25 and lose $\sim$7\textdegree{} per traverse at 50, so the
+    threshold is between them.
     \item Confirm whether X and Y still energise at power-on. \texttt{0x3A} read
     enable $=1$ on both after this session's power cycle, but that flag reports
     intent rather than coils and has been wrong before. It needs a hand on the
