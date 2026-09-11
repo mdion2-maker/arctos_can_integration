@@ -54,19 +54,32 @@ STALL_WINDOW_S = 1.5
 STALL_GRACE_S = 4.0
 STALL_FRACTION = 0.05          # of expected travel per window
 
-# can_id, gear ratio, board, byte that turns this joint CLOCKWISE
+# can_id, gear ratio, board, clockwise byte, limit-port-remap enabled
 # The clockwise byte is None where it has never been confirmed on the machine.
 JOINTS = {
-    "x": (0x01, 13.5,  "57D", 0x00),
-    "y": (0x02, 150.0, "57D", 0x80),
-    "z": (0x03, 150.0, "42D", 0x00),
-    "a": (0x04, 48.0,  "42D", None),
-    "b": (0x05, 67.82, "42D", None),
-    "c": (0x06, 67.82, "42D", 0x80),
+    "x": (0x01, 13.5,  "57D", 0x00, False),
+    "y": (0x02, 150.0, "57D", 0x80, False),
+    "z": (0x03, 150.0, "42D", 0x00, True),   # remapped 2026-09-11
+    "a": (0x04, 48.0,  "42D", None, False),
+    "b": (0x05, 67.82, "42D", None, False),
+    "c": (0x06, 67.82, "42D", 0x80, True),   # remapped 2026-09-03
 }
 
-# Which IO bits are real inputs on each board. A 42D has no IN_2.
-IO_MASK = {"57D": 0b11, "42D": 0b01}
+
+def io_mask(board, remapped):
+    """Which IO bits are real inputs, so phantom bits stay out of the aborts.
+
+    A 57D has IN_1 and IN_2 both. A bare 42D has only IN_1, and bit 1 reads 0
+    forever because there is no IN_2 to report -- reading that as a triggered
+    limit makes every 42D look parked on an endstop. But once limit port remap
+    is on, a 42D gains a second real input: IN_1 reports En and IN_2 reports
+    Dir. So the mask follows the remap state, not the board type. Getting this
+    wrong on a remapped 42D whose bit 0 happens to be low arms nothing at all
+    and moves the joint with no endstop protection.
+    """
+    if board == "57D" or remapped:
+        return 0b11
+    return 0b01
 
 
 def checksum(motor_id, data):
@@ -106,7 +119,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="print the frame, send nothing")
     args = ap.parse_args()
 
-    can_id, gear, board, cw_byte = JOINTS[args.joint]
+    can_id, gear, board, cw_byte, remapped = JOINTS[args.joint]
     if cw_byte is None:
         sys.exit(f"Joint {args.joint.upper()} has no confirmed direction mapping.\n"
                  f"Move it once with a known byte, watch which way it turns, and put the\n"
@@ -116,7 +129,7 @@ def main():
     if args.degrees <= 0:
         sys.exit("degrees must be positive -- use the direction argument to reverse")
 
-    mask = IO_MASK[board]
+    mask = io_mask(board, remapped)
     counts_per_joint_deg = gear * ENCODER_CPR / 360.0
     motor_rev = args.degrees * gear / 360.0
     pulses = round(motor_rev * MICROSTEPS_PER_REV)
@@ -126,7 +139,8 @@ def main():
     frame = [0xFD, direction + ((args.speed >> 8) & 0x0F), args.speed & 0xFF, ACCEL,
              (pulses >> 16) & 0xFF, (pulses >> 8) & 0xFF, pulses & 0xFF]
 
-    print(f"joint {args.joint.upper()}  CAN 0x{can_id:02X}  {board}  {gear}:1")
+    print(f"joint {args.joint.upper()}  CAN 0x{can_id:02X}  {board}  {gear}:1"
+          f"{'  (limit port remap ON)' if remapped else ''}")
     print(f"{args.degrees} deg {args.direction} = {motor_rev:.3f} motor rev = {pulses} pulses "
           f"at speed {args.speed}  (~{expected_s:.0f}s)")
     print(f"direction byte 0x{direction:02X}   watching IO bits "
@@ -197,9 +211,19 @@ def main():
         send(bus, can_id, [0xF7])       # a coil disable does NOT cancel a move
         time.sleep(0.1)
         send(bus, can_id, [0xF3, 0x00])
+        # The driver may have stopped answering -- lost power, tripped supply,
+        # pulled connector. The stop and the coil disable above have already gone
+        # out; this is only reporting, so it must never raise and prevent the
+        # bus being shut down cleanly.
         end_pos = query(bus, can_id, 0x31)
         end_io = query(bus, can_id, 0x34)
-        print(f"\nfinal raw={end_pos}  io=0x{end_io:02X}  ({stopped_by}).  coils disabled")
+        pos_s = str(end_pos) if end_pos is not None else "no reply"
+        io_s = f"0x{end_io:02X}" if end_io is not None else "no reply"
+        print(f"\nfinal raw={pos_s}  io={io_s}  ({stopped_by}).  coils disabled")
+        if end_pos is None or end_io is None:
+            print("  WARNING: the driver stopped answering. Zero bus-errors with total\n"
+                  "  silence means it lost power rather than the bus failing -- check the\n"
+                  "  supply, and whether it tripped because the joint met a hard stop.")
         bus.shutdown()
 
 

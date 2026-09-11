@@ -1133,6 +1133,159 @@ slow enough to be precise and safe. Worth using for any long approach.
     $+30$\textdegree{}.
 \end{itemize}
 
+\section{2026-09-11 --- Joint Z joins the bus; X and Y homed}
+\label{sec:session-2026-09-11}
+All three joints answered CAN: X \texttt{0x01}, Y \texttt{0x02}, Z \texttt{0x03}.
+Z is an \texttt{MKS\_42D} at 150:1 --- the same board family as Joint C and the
+same gear ratio as Y, which turned out to matter for both reasons.
+
+\subsection{X and Y homed and zeroed}
+X's endstop was found by supervised clockwise search
+\textbf{290.1\textdegree{}} clockwise of the power-on position. It was
+173.8\textdegree{} the previous session and 112\textdegree{} the one before ---
+three sessions, three completely different offsets. The power-on reference is
+arbitrary and the arm gets repositioned between sessions, so a stored trigger
+position is only ever useful for choosing a search bound.
+
+Y's homing procedure was defined for the first time, mirroring X's: approach
+\texttt{IN\_1} clockwise at creep speed, back off 10\textdegree{}
+counter-clockwise to clear its 2--4\textdegree{} detection zone, then
+\texttt{SET\_AXIS\_ZERO}. The creep speed is part of the procedure, not a detail
+--- a faster approach biases where the trigger is recorded and therefore where
+home lands.
+
+\begin{caution}{A homed zero does not survive a power cycle}
+Later in the session the supply was cycled, and both X's and Y's
+\texttt{raw = 0} references were gone --- the encoder counter resets to zero on
+power-up regardless of what \texttt{0x92} was told earlier. Re-home after any
+power interruption; a joint reading \texttt{0} is not necessarily at home.
+\end{caution}
+
+\subsection{Joint Z needed the limit port remap --- exactly like Joint C}
+Z's sensor LED lit under a magnet while \texttt{READ\_IO} sat frozen at
+\texttt{0x01} through several commanded moves. This is the \emph{second} time
+this precise signature has appeared, and the cause was the same as on Joint C:
+\textbf{on a 42D this build does not wire endstops to the \texttt{IN\_1}
+terminal}. They go to \texttt{En} and \texttt{Dir} via limit port remap, which is
+off by default, so bit 0 reports an empty terminal and idles high forever.
+
+Sending \texttt{9E 01} changed the resting byte immediately, from \texttt{0x01}
+to \texttt{0x02} --- bit 1 came alive because \texttt{Dir} is a real input under
+remap. A magnet pass then showed bit 0 toggling \texttt{0x02}/\texttt{0x03} with
+the magnet on and off, confirming the sensor sits on \texttt{En}, active low, so
+the default \texttt{Hm\_Trig = Low} is correct.
+
+\begin{caution}{\texttt{EndLimit} does not make an input visible}
+It is natural to assume that enabling \texttt{EndLimit} is what makes an endstop
+work, and that assumption cost time here. \texttt{EndLimit} governs only whether
+the driver \emph{acts} on a limit --- stops the motor. Reading the pin through
+\texttt{0x34} needs no \texttt{EndLimit} at all. If an input is not reporting,
+\texttt{EndLimit} is not the missing piece; on a 42D, the remap almost certainly
+is.
+\end{caution}
+
+The remap survived a power cycle, as it did on Joint C.
+
+\subsection{Z has two endstops, and one of them was invisible}
+Before the remap, sweeps counter-clockwise found nothing and Z looked like a
+single-endstop joint in the way X genuinely is. That was an artefact:
+\texttt{Dir} was not being read at all. With remap on, a counter-clockwise sweep
+tripped \texttt{IN\_2} after 31.1\textdegree{}.
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Input} & \textbf{Bit} & \textbf{Pin} & \textbf{Limit} \\ \midrule
+\texttt{IN\_1} & 0 & \texttt{En}  & clockwise \\
+\texttt{IN\_2} & 1 & \texttt{Dir} & counter-clockwise \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Both active low. Direction mapping confirmed by eye: \texttt{0x00} is clockwise
+on Z, matching X and opposing Y and C --- still no cross-joint pattern.
+
+\subsection{Z's envelope: 124.4\textdegree{}}
+Two calibration runs, both approaches at speed 25:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+ & \textbf{Separation} & \\ \midrule
+run 1 & 124.553\textdegree{} & \\
+run 2 & 124.262\textdegree{} & difference \textbf{0.291\textdegree{}} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+That agreement rules out gross slip --- Y lost 7\textdegree{} per traverse at
+speed 50, and this is 0.23\% over 124\textdegree{}. But it is ten times looser
+than Y's creep-speed pair, which agreed to 0.030\textdegree{}. The individual
+triggers each moved about a degree between runs (\texttt{IN\_1} by 1048 counts,
+\texttt{IN\_2} by 939) and partly cancelled; both drifting the same rotational
+way suggests the sensors are repeatable but the magnets arrive at slightly
+different places, which is what a belt with some compliance would do. Record it
+as \textbf{124.4\textdegree{} $\pm$ 0.3\textdegree{}}; a third run would show
+whether the spread is scatter or one-directional drift.
+
+\subsection{Belt fitted: a small, measurable cost}
+The same 3\textdegree{} out-and-back before and after fitting Z's belt:
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+ & \textbf{Out} & \textbf{Back} & \textbf{Net error} \\ \midrule
+no belt   & $-2.903$\textdegree{} & $+2.901$\textdegree{} & 36 counts $=$ 0.005\textdegree{} \\
+with belt & $-2.903$\textdegree{} & $+2.918$\textdegree{} & 162 counts $=$ 0.024\textdegree{} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Both small. Note this is a motor-side measurement and cannot confirm the arm
+moved.
+
+\subsection{Two new scripts}
+\begin{itemize}
+    \item \texttt{joint\_move.py} --- \texttt{joint\_move.py z cw 15}. Three
+    things to change: joint, direction, distance. Direction is given as a
+    \emph{name} because the byte does not transfer between joints; the table
+    holds each mapping confirmed by eye, and joints whose mapping has never been
+    confirmed (A, B) are refused rather than guessed at.
+    \item \texttt{joint\_calibrate.py} --- \texttt{joint\_calibrate.py z}. Sweeps
+    to both limits at one speed and reports the separation. It imports the joint
+    table from \texttt{joint\_move.py} so there is one table rather than two that
+    drift apart.
+\end{itemize}
+
+\begin{caution}{The IO mask must follow the remap state, not the board type}
+A bare 42D has only \texttt{IN\_1}, so bit 1 reads 0 permanently and must be
+excluded from the abort logic or every 42D looks parked on an endstop. But a
+\emph{remapped} 42D has two real inputs. \texttt{joint\_move.py} initially
+hard-coded 42D as bit 0 only, and on Z --- remapped, with bit 0 already low
+because a magnet was resting on the sensor --- it would have armed
+\textbf{nothing} and moved the joint with no endstop protection at all, while
+printing output that looked entirely normal. Fixed: the mask is now derived from
+the remap flag.
+\end{caution}
+
+Also fixed: the cleanup path crashed with a \texttt{TypeError} when the driver
+stopped answering mid-move, because it formatted a \texttt{None} status into the
+final report. \texttt{0xF7} and the coil disable had already been sent, so the
+joint was safe, but the exception skipped \texttt{bus.shutdown()}. A cleanup path
+must never raise.
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Home and zero Z the way X and Y now are --- approach clockwise at creep
+    speed, back off roughly 10\textdegree{} (its zone looks narrow, unlike X's
+    10--17\textdegree{}), then \texttt{0x92}.
+    \item Re-home X and Y: their zeros were lost to the power cycle.
+    \item A third calibration run on Z if the $\pm0.3$\textdegree{} matters,
+    to separate scatter from belt drift.
+    \item Confirm A and B direction mappings before either can be driven ---
+    \texttt{joint\_move.py} refuses them until then.
+\end{itemize}
+
 \newpage
 \appendix
 \section*{Appendices --- standing reference}

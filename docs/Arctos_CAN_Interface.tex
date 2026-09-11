@@ -736,6 +736,11 @@ Driver stops responding mid-test &
   Slip also \emph{unloads} the motor, so no stall, torque or position-error
   heuristic will fire. Confirm motion at the output before trusting any encoder
   result. \\
+Endstop still silent after enabling \texttt{EndLimit} &
+  \texttt{EndLimit} does not make an input \emph{visible}. It governs only
+  whether the driver \emph{acts} on a limit. Reading the pin via \texttt{0x34}
+  needs no \texttt{EndLimit} at all --- on a 42D the missing piece is almost
+  always the limit port remap. \\
 Endstop never changes \texttt{0x34}, sensor LED does light &
   On a 42D, limit port remap is probably not enabled, so bit 0 is reporting the
   empty \texttt{IN\_1} terminal rather than \texttt{En}. Send \texttt{9E 01}.
@@ -818,6 +823,16 @@ explicit safety band.
   \texttt{0x34} at all. \\
 \texttt{joint\_magnet\_probe.py} &
   Checks whether an external magnet disturbs the encoder reading. \\
+\texttt{joint\_move.py} &
+  \texttt{joint\_move.py z cw 15}. One joint, a named direction, a distance.
+  Direction is a name rather than a byte because the byte does not transfer
+  between joints; unconfirmed joints are refused rather than guessed at. Endstop
+  and stall aborts on by default, \texttt{0xF7} before the coil disable. \\
+\texttt{joint\_calibrate.py} &
+  \texttt{joint\_calibrate.py z}. Sweeps to both limits at one speed and reports
+  the separation. Imports the joint table from \texttt{joint\_move.py} so the
+  direction mappings live in one place. Run it twice --- a single figure is not
+  a result. \\
 \bottomrule
 \end{longtable}
 
