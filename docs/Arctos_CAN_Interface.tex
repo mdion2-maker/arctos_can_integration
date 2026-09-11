@@ -131,6 +131,51 @@ A's \texttt{0x04} and its 48:1 ratio are empirically verified; the rest are conf
 values.
 \end{caution}
 
+\subsection{Confirmed per-joint parameters}
+\label{sec:joint-params}
+Everything below was established on the machine, not read from a config file.
+Blank means not yet confirmed --- treat it as unknown rather than assuming a
+default.
+
+\begin{center}
+\begin{tabular}{lllllll}
+\toprule
+\textbf{J} & \textbf{Board} & \textbf{Gear} & \textbf{Remap} & \textbf{CW byte}
+  & \textbf{Endstops} & \textbf{Envelope} \\ \midrule
+X & 57D & 13.5   & no  & \texttt{0x00} & one, \texttt{IN\_2} (CW side) & --- \\
+Y & 57D & 150.0  & no  & \texttt{0x80} & \texttt{IN\_1} CW, \texttt{IN\_2} CCW & 158.24\textdegree{} \\
+Z & 42D & 150.0  & \textbf{yes} & \texttt{0x00} & \texttt{IN\_1}=\texttt{En} CW, \texttt{IN\_2}=\texttt{Dir} CCW & 124.4\textdegree{} $\pm$0.3 \\
+A & 42D & 48.0   &     &               &  & --- \\
+B & 42D & 67.82  &     &               &  & --- \\
+C & 42D & 67.82  & \textbf{yes} & \texttt{0x80} & on \texttt{En}/\texttt{Dir} & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{caution}{The clockwise byte does not transfer between joints}
+\texttt{0x00} is clockwise on X and Z and counter-clockwise on Y and C. Four
+joints, no pattern. An earlier draft proposed that ``encoder counting down means
+clockwise'' held across joints; Y disproved it. Each mapping in the table was
+established by watching the joint turn, and A and B are blank because nobody has
+watched them yet. \texttt{joint\_move.py} refuses to move a joint whose mapping is
+blank rather than guess, because a guess is a coin flip on direction.
+\end{caution}
+
+\begin{caution}{Per-joint quirks that have each cost a session}
+\begin{itemize}
+    \item \textbf{X has only one endstop}, on \texttt{IN\_2}. \texttt{GoHome}
+    homes to \texttt{IN\_1}, so it would never terminate --- \textbf{never send
+    \texttt{0x91} to X}.
+    \item \textbf{Y's gears slip above speed 25}, losing $\sim$7\textdegree{}
+    per traverse at 50 and $\sim$20\textdegree{} at 150. Calibrate it at 25.
+    \item \textbf{Z and C are remapped}; their endstops are on \texttt{En} and
+    \texttt{Dir}, not \texttt{IN\_1}, and \texttt{Com} must be tied high.
+    \item \textbf{X's detection zone is 10--17\textdegree{} wide} but releases in
+    0.062\textdegree{} going the other way, so home must sit clear of it. Y's and
+    Z's are only a few degrees.
+\end{itemize}
+\end{caution}
+
 \begin{caution}{Always confirm a CAN ID against real hardware}
 Run the read-only scan before trusting any table, including the one above. It sends
 only the \texttt{0x31} query and never enables coils:
@@ -326,6 +371,8 @@ time, including for the emergency stop.
 \texttt{READ\_SHAFT\_PROTECTION} & \texttt{0x3E} & \texttt{00} clear. Non-zero latches the driver. \\
 \texttt{READ\_IO}             & \texttt{0x34} & Input and output pin states. Verified. Section~\ref{sec:endstops}. \\
 \texttt{SET\_WORKING\_MODE} & \texttt{0x82} & See the panel caution. \\
+\texttt{SET\_EN\_ACTIVE}    & \texttt{0x85} & \texttt{00} low, \texttt{01} high, \texttt{02} always on. \\
+\texttt{SET\_AXIS\_ZERO}     & \texttt{0x92} & Zeroes the counter where it stands. No motion. \\
 \texttt{SET\_HOME\_PARAMS}   & \texttt{0x90} & Trigger level, direction, speed, \texttt{EndLimit}. \\
 \texttt{GO\_HOME}            & \texttt{0x91} & Runs onto the limit. \textbf{Unlocks the shaft} if \texttt{EndLimit=1}. \\
 \texttt{LIMIT\_PORT\_REMAP}  & \texttt{0x9E} & \textbf{Required for 42D endstops here.} No read-back. \\
@@ -609,6 +656,34 @@ that terminal is deliberately empty, so it idles high forever regardless of the
 magnet. Two sessions and two different sensors were spent on this before the cause
 was found. If an endstop reads nothing, re-send \texttt{9E 01} before suspecting the
 wiring.
+\end{caution}
+
+\subsection{Homing a joint in practice}
+The procedure that has worked on X, Y and Z, and which does not depend on any
+driver setting that cannot be read back:
+
+\begin{enumerate}
+    \item \textbf{Search} toward the chosen limit at a fixed slow speed, watching
+    \texttt{0x34} directly and stopping on the bit yourself. Do not use
+    \texttt{GoHome (0x91)}: its direction lives in \texttt{Hm\_Dir}, which cannot
+    be queried, and the manual says the motor ``will keep running until it hits
+    the limit switch'' --- with no switch on the watched input there is no
+    terminating condition.
+    \item \textbf{Record the trigger} position. That edge is the reference.
+    \item \textbf{Step clear of the detection zone.} Parking inside it leaves the
+    joint sitting on an asserted limit at its own home.
+    \item \textbf{\texttt{SET\_AXIS\_ZERO (0x92)}} where it rests. Readings then
+    become joint angles instead of offsets from an arbitrary power-on point.
+\end{enumerate}
+
+\begin{caution}{A homed zero does not survive a power cycle}
+The encoder counter resets to zero at power-up regardless of what \texttt{0x92}
+was told earlier, so a joint reading \texttt{0} is not necessarily at home ---
+it may simply have just been powered on. Re-home after any power interruption.
+This is the same reason a stored trigger position is only ever useful for
+choosing a search bound: Joint X's endstop was 112\textdegree{} from the start
+position one session, 173.8\textdegree{} the next and 290.1\textdegree{} the
+one after.
 \end{caution}
 
 \subsection{Making a homing reference repeatable}

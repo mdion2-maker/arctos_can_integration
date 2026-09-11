@@ -410,6 +410,32 @@ python3 joint_endstop_test.py --can-id 0x06
 \texttt{SR\_vFOC}, and that the remap command was actually sent --- it has no
 read-back, so it cannot be confirmed by query.}
 
+\begin{caution}{\texttt{EndLimit} is not what makes an endstop readable}
+\texttt{EndLimit} governs only whether the driver \emph{acts} on a limit.
+\texttt{0x34} reports the pin regardless, so if an input is not reporting,
+enabling \texttt{EndLimit} will not change it. On a 42D the missing piece is
+almost always the remap above --- this has caught two joints now, C and Z, with
+the identical signature of a lit sensor LED and \texttt{0x34} frozen at
+\texttt{0x01}.
+\end{caution}
+
+Once the pins report, record the joint's travel and the sensor-to-input mapping:
+
+\begin{lstlisting}
+python3 joint_calibrate.py z
+\end{lstlisting}
+
+Run it twice at the same speed. Approach speed biases the trigger position from
+both ends at once, so a single figure is not a result.
+
+\begin{caution}{Home with a search, not \texttt{GoHome}}
+\texttt{GoHome (0x91)} takes its direction from \texttt{Hm\_Dir}, which cannot be
+read back, and the manual says the motor keeps running until it hits the limit
+switch. Search instead, watching \texttt{0x34} yourself, record the trigger, step
+clear of the detection zone, then \texttt{SET\_AXIS\_ZERO (0x92)}. Note that the
+zero does not survive a power cycle.
+\end{caution}
+
 \begin{caution}{A parked magnet chatters}
 A magnet left at the edge of the sensor's range oscillates across its threshold. Use
 \texttt{joint\_endstop\_dwell.py} to confirm a deliberate hold registers as one clean

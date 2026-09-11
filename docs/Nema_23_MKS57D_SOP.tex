@@ -371,6 +371,45 @@ Speed limit       & measured and recorded above \\
 \end{tabular}
 \end{center}
 
+\section*{Endstops --- wiring and verification \verified}
+
+The 57D has \textbf{two real limit inputs}, \texttt{IN\_1} and \texttt{IN\_2}, so
+unlike the 42D it needs \textbf{no limit port remap}. Wire each sensor to
+\texttt{EVCC}, \texttt{EGND} and its input on the left green block, and set
+\texttt{SW1} pins 2 and 3 ON so the board feeds the sensors its own 5\,V.
+
+Check the pins with the joint stationary, passing a magnet at each sensor:
+
+\begin{lstlisting}
+python3 joint_endstop_test.py --can-id 0x01
+\end{lstlisting}
+
+\passif{Resting byte \texttt{0x0F}; one sensor drops it to \texttt{0x0E}
+(\texttt{IN\_1}), the other to \texttt{0x0D} (\texttt{IN\_2}), returning to
+\texttt{0x0F} between passes.}
+\failif{Nothing moves. An unwired 57D input reads \emph{high}, so a reading of
+\emph{low} at rest is not ``not connected'' --- suspect a reversed 3-pin plug,
+which swaps \texttt{Signal} and \texttt{GND} around the middle \texttt{+V} pin
+and straps the input to ground while the sensor stays powered and its LED still
+works.}
+
+\begin{caution}{\texttt{EndLimit} is not what makes an endstop readable}
+\texttt{EndLimit} governs only whether the driver \emph{acts} on a limit.
+\texttt{0x34} reports the pin regardless. If an input is not reporting, enabling
+\texttt{EndLimit} will not change that.
+\end{caution}
+
+Note which sensor lands on which input before homing. \texttt{GoHome} homes to
+\texttt{IN\_1}; a joint whose only sensor sits on \texttt{IN\_2} cannot be homed
+by the driver at all. Record the mapping and the joint's travel with:
+
+\begin{lstlisting}
+python3 joint_calibrate.py y
+\end{lstlisting}
+
+Run it twice at the same speed --- a single figure is not a result, and approach
+speed biases the trigger position from both ends at once.
+
 \section*{Step 11 --- Shutdown \verified}
 
 Stop any running script with Ctrl+C first.

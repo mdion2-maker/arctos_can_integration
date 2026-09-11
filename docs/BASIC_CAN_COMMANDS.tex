@@ -273,6 +273,44 @@ reports the empty \texttt{IN\_1} terminal and sits at \texttt{0x01} no matter wh
 the magnet does. If an endstop reads nothing, send this before suspecting wiring.
 See the endstop section of \texttt{Arctos\_CAN\_Interface} for the full picture.
 
+\section{Homing and zeroing}
+
+Set the current position as zero, without moving the motor:
+
+\begin{lstlisting}
+cansend can0 003#9293
+\end{lstlisting}
+
+The reply is \texttt{92 01} on success. Recompute the checksum for your joint:
+it is \texttt{(CAN\_ID + 0x92) \& 0xFF}.
+
+\textbf{Do not use \texttt{GoHome (0x91)} to home a joint on this arm.} Its
+direction is stored in \texttt{Hm\_Dir}, which cannot be read back, and the
+manual says the motor keeps running until it hits the limit switch --- so if it
+runs the wrong way, or the watched input has no sensor on it, nothing stops it.
+Search with a script that watches \texttt{0x34} itself:
+
+\begin{lstlisting}
+python3 joint_move.py z cw 15
+python3 joint_calibrate.py z
+\end{lstlisting}
+
+A zero set with \texttt{0x92} \textbf{does not survive a power cycle} --- the
+counter resets to 0 at power-up either way, so a joint reading \texttt{0} is not
+necessarily at home.
+
+\section{Stop the motors energising at power-on}
+
+If the motors hold torque as soon as they are powered, the \texttt{En} option is
+set to \texttt{Hold} (always enabled). Put it back to active-low:
+
+\begin{lstlisting}
+cansend can0 001#850086
+\end{lstlisting}
+
+Checksum is \texttt{(CAN\_ID + 0x85 + 0x00) \& 0xFF}. Do not send this to a joint
+using limit port remap, where \texttt{En} is a limit input rather than an enable.
+
 \section{Scan for what is actually on the bus}
 
 Never trust a config file or a table for a CAN ID. This sends only the read-only
