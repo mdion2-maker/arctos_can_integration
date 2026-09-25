@@ -749,6 +749,27 @@ shorted to ground --- lights both LEDs permanently. Things that produce it:
     both indicators on regardless of what the sensor is doing.
 \end{itemize}
 
+\begin{caution}{A reversal damages the part; correcting the wiring does not undo it}
+These hall modules have \textbf{no reverse-polarity protection}. Feeding the
+supply backwards forward-biases the die's substrate diode, and the usual result
+is a destroyed output stage that latches --- which lights both indicators
+permanently and never responds to a magnet again. So ``it was plugged in
+backwards at first'' is a sufficient explanation on its own, and the symptom
+will persist after the wiring is corrected.
+
+What limits the damage is how hard the supply could push. On a 42D,
+\texttt{EVCC} is the board's own 5\,V rated 20\,mA, and that current limit may
+be enough to have saved a briefly reversed module --- it is worth testing before
+assuming the part is dead.
+
+Separate the sensor from the harness by swapping: put a \emph{known-good} sensor
+from a working joint onto this joint's harness. If the good sensor works here,
+the original is dead and should be replaced. If the good sensor misbehaves here
+too, the fault is in the harness or the driver's \texttt{EVCC} rail --- check
+that rail directly, since reverse current can damage it as well, and a driver
+that is perfectly healthy over CAN can still have a dead 5\,V output.
+\end{caution}
+
 Check the supply before suspecting the sensor: measure \texttt{+V} to
 \texttt{GND} at the module and confirm it reads about 5\,V with the right
 polarity. A sensor whose LEDs respond correctly to each pole \emph{separately} is
