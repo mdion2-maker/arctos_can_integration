@@ -60,7 +60,7 @@ JOINTS = {
     "x": (0x01, 13.5,  "57D", 0x00, False),
     "y": (0x02, 150.0, "57D", 0x80, False),
     "z": (0x03, 150.0, "42D", 0x00, True),   # remapped 2026-09-11
-    "a": (0x04, 48.0,  "42D", None, False),
+    "a": (0x04, 48.0,  "42D", 0x00, False),  # cw confirmed by eye 2026-09-18
     "b": (0x05, 67.82, "42D", None, False),
     "c": (0x06, 67.82, "42D", 0x80, True),   # remapped 2026-09-03
 }
@@ -117,13 +117,28 @@ def main():
                     help="motor rpm (default 25). Joint Y's gears slip above 25.")
     ap.add_argument("--channel", default="can0")
     ap.add_argument("--dry-run", action="store_true", help="print the frame, send nothing")
+    ap.add_argument("--assume-cw", type=lambda x: int(x, 0), default=None, metavar="BYTE",
+                    help="bootstrap a joint with no confirmed mapping: treat this byte "
+                         "(0x00 or 0x80) as clockwise for this run. Watch the joint, then "
+                         "record the real value in the JOINTS table.")
     args = ap.parse_args()
 
     can_id, gear, board, cw_byte, remapped = JOINTS[args.joint]
-    if cw_byte is None:
+    if args.assume_cw is not None:
+        if args.assume_cw not in (0x00, 0x80):
+            sys.exit("--assume-cw must be 0x00 or 0x80")
+        cw_byte = args.assume_cw
+        print(f"*** BOOTSTRAP: assuming 0x{cw_byte:02X} is clockwise on "
+              f"{args.joint.upper()}. This is UNVERIFIED.")
+        print("*** Watch the joint. If it turns the other way, the clockwise byte is "
+              f"0x{cw_byte ^ 0x80:02X}.")
+        print("*** Record the confirmed value in the JOINTS table before relying on it.\n")
+    elif cw_byte is None:
         sys.exit(f"Joint {args.joint.upper()} has no confirmed direction mapping.\n"
-                 f"Move it once with a known byte, watch which way it turns, and put the\n"
-                 f"clockwise byte in the JOINTS table. Refusing to guess.")
+                 f"Move it once and watch which way it turns:\n"
+                 f"    joint_move.py {args.joint} cw <deg> --assume-cw 0x00\n"
+                 f"then put the confirmed clockwise byte in the JOINTS table.\n"
+                 f"Refusing to guess.")
     direction = cw_byte if args.direction == "cw" else (cw_byte ^ 0x80)
 
     if args.degrees <= 0:
@@ -205,7 +220,29 @@ def main():
                 print(f"  t={now - t0:5.1f}s  {travelled:+8.3f} deg  io=0x{io:02X}", flush=True)
                 last_print = now
             if abs(pos - p0) >= pulses * ENCODER_CPR / MICROSTEPS_PER_REV - 300:
-                print(f"  arrived: {travelled:+.3f} deg")
+                # Within 300 counts of target, but NOT there yet. Declaring
+                # arrival here and exiting sends 0xF7, which cancels the last
+                # sliver of the move -- measured on Joint A as a fixed 0.129 deg
+                # shortfall on both a 4 deg and a 180 deg move, matching the 300
+                # count threshold exactly. Negligible once, but ten short moves
+                # lose over a degree. So wait for the driver to stop moving.
+                settle_last, settle_still = pos, 0
+                while time.time() - t0 < expected_s + 30:
+                    time.sleep(0.2)
+                    now_pos = query(bus, can_id, 0x31)
+                    if now_pos is None:
+                        continue
+                    if abs(now_pos - settle_last) < 5:
+                        settle_still += 1
+                        if settle_still >= 3:
+                            break
+                    else:
+                        settle_still = 0
+                    settle_last = now_pos
+                final = query(bus, can_id, 0x31)
+                if final is not None:
+                    pos = final
+                print(f"  arrived: {(pos - p0) / counts_per_joint_deg:+.3f} deg")
                 break
     finally:
         send(bus, can_id, [0xF7])       # a coil disable does NOT cancel a move
