@@ -1286,6 +1286,120 @@ must never raise.
     \texttt{joint\_move.py} refuses them until then.
 \end{itemize}
 
+\section{2026-09-25 --- Joint A bare-motor bring-up, and a truncation bug in every move}
+\label{sec:session-2026-09-25}
+Joint A answered at \texttt{0x04}. It is an \texttt{MKS\_42D} at \textbf{48:1},
+the coarsest ratio on the arm, and that coarseness is what exposed a bug that had
+been present in every move this project has commanded.
+
+\subsection{A fixed 0.129\textdegree{} was being cut off every move}
+A's moves landed consistently short. The pattern is what identifies the cause:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Commanded} & \textbf{Delivered} & \textbf{Short by} \\ \midrule
+4\textdegree{}   & 3.866\textdegree{}   & 0.134\textdegree{} \\
+4\textdegree{}   & 3.875\textdegree{}   & 0.125\textdegree{} \\
+180\textdegree{} & 179.871\textdegree{} & \textbf{0.129\textdegree{}} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The \emph{same absolute} shortfall over a move forty-five times longer means a
+fixed offset, not a proportional loss. Read as percentages it would have looked
+like 97\% one time and 99.93\% the other, and neither reading suggests a bug ---
+it took two very different distances to see it.
+
+The cause was mine: \texttt{joint\_move.py} declared arrival once within 300
+counts of target and exited, and the exit path sends \texttt{0xF7}, which
+genuinely cancels the remainder. At A's 48:1 those 300 counts are
+0.137\textdegree{}, matching the measurement almost exactly.
+
+\begin{caution}{Why this hid on every other joint}
+The same 300-count threshold is 0.026\textdegree{} on C at 67.82:1 and
+0.011\textdegree{} on Y at 150:1 --- inside the noise. Only A's coarse 48:1 made
+it large enough in joint terms to notice. A bug whose visibility scales with gear
+ratio will always surface on the coarsest joint first, and will have been
+silently present on the others the whole time.
+
+It is harmless once and accumulates in a series: ten short steps on A would have
+lost over a degree.
+\end{caution}
+
+Fixed by waiting for the encoder to stop moving before sending the stop, rather
+than calling the move done early.
+
+\subsection{Verification: a full turn each way}
+Bare motor, nothing attached:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+ & \textbf{Delivered} & \texttt{raw} \\ \midrule
+start                     & ---                     & 0 \\
+360\textdegree{} clockwise & $+359.999$\textdegree{} & 786429 \\
+360\textdegree{} counter-clockwise & $-360.006$\textdegree{} & $-18$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Round-trip error \textbf{18 counts, 0.0015\textdegree{}}, against the
+0.129\textdegree{} the old code would have lost on each leg. Motion was smooth
+and linear across 96 motor revolutions in both directions, no stalling and no
+rough patches. This is a motor, driver and encoder result --- it says nothing
+about a drivetrain, because there is none attached yet.
+
+\subsection{Direction: another per-joint fact, not a derivable one}
+Clockwise on A is \texttt{0x00}, confirmed by eye. Note that \texttt{0x00} counts
+A's encoder \emph{up}, where the same byte counts \emph{down} on X and Z. So even
+the relationship between encoder sign and direction byte is per joint. The table
+in \texttt{Arctos\_CAN\_Interface} records what was observed; nothing about it is
+derivable from another joint.
+
+\texttt{joint\_move.py} gained \texttt{--assume-cw} for exactly this situation: it
+moves a joint whose mapping has never been confirmed, states plainly that the
+assumption is unverified, and says what to record afterwards. The refusal message
+for an unmapped joint now names that path rather than simply declining. Only
+Joint B is still unmapped.
+
+\subsection{Endstop fitted, and not working: both poles lit}
+A dual-output magnetic endstop was fitted to A. \textbf{Both the north and south
+LEDs are lit at once, and neither changes when a magnet is brought near.}
+\texttt{READ\_IO} is unchanged at \texttt{0x01}, exactly as before the sensor was
+fitted, so the driver sees nothing either.
+
+Both outputs asserted simultaneously is not a magnetic state --- a single die
+cannot be presented with both poles at once --- so this is not detection, it is
+both outputs stuck. Unresolved at the end of the session; see next steps.
+
+\subsection{Two power losses, both mid-session}
+Power dropped twice, each time shortly after an A move completed, with all four
+drivers going silent and zero bus-errors. No motion was commanded either time:
+the script's startup query got no reply and it exited before sending anything.
+A was a bare motor drawing almost nothing, which makes a current-draw explanation
+unlikely and points at the supply or a connector rather than the joint. Worth
+watching whether it recurs.
+
+The error handling introduced after the previous session earned its keep here:
+the same situation crashed with a \texttt{TypeError} and leaked the CAN socket a
+week earlier, and this time reported cleanly and refused to command a move to a
+driver that was not listening.
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Diagnose A's endstop. Both LEDs lit with no response to a magnet points
+    at supply rather than detection --- see the caution in
+    \texttt{Arctos\_CAN\_Interface}'s endstop section.
+    \item \textbf{A's remap is off} (\texttt{io = 0x01}). A dual-output sensor
+    needs two inputs, and a bare 42D has one, so A will need \texttt{9E 01} and
+    the \texttt{En}/\texttt{Dir} wiring with \texttt{Com} tied high --- the same
+    arrangement as Z and C. Until then a second output has nowhere to go.
+    \item A has never been coupled to its joint. Every result above is
+    bare-motor.
+    \item Joint B is the last unmapped direction.
+\end{itemize}
+
 \newpage
 \appendix
 \section*{Appendices --- standing reference}

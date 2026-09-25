@@ -723,6 +723,38 @@ Joint X's endstop was 112\textdegree{} from the start position one session and
 \texttt{SET\_AXIS\_ZERO (0x92)} so subsequent readings are joint angles.
 \end{caution}
 
+\subsection{When a sensor's LEDs say something impossible}
+On a dual-output sensor --- one output per magnet pole, an LED on each --- the
+two LEDs are mutually exclusive by physics. A single die cannot be presented
+with a north and a south pole at the same point, so \textbf{both LEDs lit at once
+is not a detection state}. Neither is both lit and unresponsive to a magnet: that
+is both outputs stuck, which is a supply or wiring fault rather than anything
+magnetic.
+
+On these modules the indicator usually sits between \texttt{+V} and the output
+pin, so it lights when the output is pulled low. Both outputs held low ---
+because the chip is not running, or its outputs are damaged, or the pins are
+shorted to ground --- lights both LEDs permanently. Things that produce it:
+
+\begin{itemize}
+    \item \textbf{Supply reversed or on the wrong pin.} A four-pin dual-output
+    module (\texttt{+V}, \texttt{GND}, and two outputs) reversed end-for-end puts
+    \texttt{+V} on an output and an output on \texttt{+V}. The chip is then
+    fed through a pin that was never meant to carry it, and does not run.
+    \item \textbf{Overvoltage.} These are 5\,V parts. On a 42D,
+    \texttt{EVCC}/\texttt{EGND} is the board's own 5\,V rated 20\,mA --- two lit
+    LEDs plus the die can approach that budget, and anything fed from a 12--24\,V
+    rail instead will be damaged outright.
+    \item \textbf{Output pins shorted to ground} by a mis-landed wire, which pulls
+    both indicators on regardless of what the sensor is doing.
+\end{itemize}
+
+Check the supply before suspecting the sensor: measure \texttt{+V} to
+\texttt{GND} at the module and confirm it reads about 5\,V with the right
+polarity. A sensor whose LEDs respond correctly to each pole \emph{separately} is
+working; that is the state to get back to before looking at anything on the CAN
+side.
+
 \subsection{Homing}
 \texttt{SET\_HOME\_PARAMS (0x90)} carries \texttt{homeTrig} (0 low, 1 high),
 \texttt{homeDir} (0 CW, 1 CCW), a 16-bit \texttt{homeSpeed} in rpm, and
