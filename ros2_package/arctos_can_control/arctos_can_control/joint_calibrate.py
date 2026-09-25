@@ -95,7 +95,12 @@ def main():
     ap.add_argument("--channel", default="can0")
     args = ap.parse_args()
 
-    can_id, gear, board, cw_byte, remapped = JOINTS[args.joint]
+    can_id, gear, board, cw_byte, remapped, max_speed = JOINTS[args.joint]
+    if max_speed is not None and args.speed > max_speed:
+        print(f"*** speed {args.speed} exceeds joint {args.joint.upper()}'s measured safe "
+              f"maximum of {max_speed}; clamping. Above it the gears slip, which inflates "
+              f"the measured envelope.")
+        args.speed = max_speed
     if cw_byte is None:
         sys.exit(f"Joint {args.joint.upper()} has no confirmed direction mapping.")
     ccw_byte = cw_byte ^ 0x80

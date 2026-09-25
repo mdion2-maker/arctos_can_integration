@@ -1400,6 +1400,117 @@ driver that was not listening.
     \item Joint B is the last unmapped direction.
 \end{itemize}
 
+\section{2026-09-25 (continued) --- Round-trip checks, and a stall detector that cried wolf}
+\label{sec:session-2026-09-25b}
+
+\subsection{A false-stall bug, and what gave it away}
+A round-trip check across every joint reported three of four as stalling:
+Joint A after 0.246\textdegree{}, Y after 21\textdegree{}, Z after 8.4\textdegree{}.
+\textbf{The reading that exposed it was A's}, because A had completed a flawless
+360\textdegree{} round trip minutes earlier. A joint does not develop a stall at
+a quarter of a degree between one test and the next, so the detector was wrong,
+not the arm.
+
+The cause was reimplementation. \texttt{joint\_move.py} already had working stall
+detection --- travel measured across a 1.5\,s window, and only after a 4\,s grace
+period. Writing the round-trip script I wrote a cheaper one instead: consecutive
+polls differing by under 5 counts, three times running, with no grace period at
+all. At \texttt{ACCEL = 2} the acceleration ramp is slow enough that the first
+few polls of every move look motionless, so it fired during the ramp.
+
+\begin{caution}{Reuse the detector, do not rewrite it}
+Both scripts now share \texttt{joint\_move.py}'s windowed logic. The bug was not
+subtle physics --- it was writing a second version of something that already
+worked, and the second version being worse. The same reasoning is why
+\texttt{joint\_calibrate.py} imports the joint table rather than keeping a copy.
+\end{caution}
+
+The results from the faulty run are void. Only X's leg completed, and it is not
+re-verified, so its $-0.47$\textdegree{} return error is recorded here as an open
+question rather than a finding.
+
+\subsection{Joint A: six round trips, bare motor}
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Test} & \textbf{Return error} & \\ \midrule
+360\textdegree{} each way, speed 50 & 0.0015\textdegree{} & \\
+45\textdegree{}, speed 25 & 0.0206\textdegree{} & \\
+45\textdegree{}, speed 25 & 0.0018\textdegree{} & \\
+45\textdegree{}, speed 25 & 0.0027\textdegree{} & \\
+45\textdegree{}, speed 25 & 0.0124\textdegree{} & \\
+360\textdegree{} each way, speed 50 & \textbf{0.0005\textdegree{}} & one encoder count \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Every return inside 0.021\textdegree{}, most inside 0.003\textdegree{}, across
+three power cycles and two speeds. On the best run the two legs matched each
+other to 0.001\textdegree{} --- the joint travels the same distance in both
+directions, which is the more telling property.
+
+At speed 50 both legs overshot by about 0.07\textdegree{} where the speed-25 runs
+landed within 0.02\textdegree{}: the driver carries further past target before
+settling when it is moving faster. It is symmetric, so it cancels on a round
+trip, which is why the return error is the figure to read rather than either leg.
+
+\textbf{This remains a bare-motor result.} Nothing is attached to A. It proves
+the motor, driver, encoder and command path, and says nothing about a
+drivetrain --- which is precisely where Y looked perfect on the bus while its
+gears lost 7\textdegree{} a traverse.
+
+\subsection{Joint Z: the endstop did its job}
+Z's 45\textdegree{} round trip stopped on \texttt{IN\_1} after
+41.3\textdegree{} --- a genuine limit trigger, not a false stall --- then
+returned the full 45.019\textdegree{}. The resulting $+3.745$\textdegree{}
+displacement is arithmetic rather than a fault: $45.019 - 41.271 = 3.748$. The
+summary flags a leg that stopped early for exactly this reason, so the number is
+not mistaken for a measurement. Z's remap and both endstops survived the day's
+power cycles.
+
+\subsection{Per-joint speed limits are now enforced, not remembered}
+Y's cycloidal gears slip above speed 25, and the encoder cannot see it happen.
+That fact lived only in this log, where a caller had to remember it. It is now a
+field in the \texttt{JOINTS} table and enforced by every consumer: asking for
+speed 150 on Y clamps to 25 and says why. \texttt{None} in that field means
+nobody has measured a limit --- it is not a default.
+
+\subsection{Power dropped four times}
+All four drivers went silent four times during the session, always with
+\textbf{zero bus-errors} and the adapter still enumerated, which is the signature
+of losing power rather than a bus fault. Every drop landed in the gap
+\emph{between} runs, never during a move. Two of them followed A running as a
+bare motor with nothing attached, drawing almost nothing.
+
+That combination rules out current draw, the CAN bus and any single driver, and
+points upstream at the supply or its connection --- something stable in steady
+state that lets go shortly after a load event. Unresolved; it needs a meter and
+eyes on the supply's own indicator at the moment it goes.
+
+Worth recording that no completed run was corrupted: the drops only ever
+prevented a run from starting, and A's accuracy either side of a power cycle is
+indistinguishable.
+
+\subsection{New script}
+\texttt{joint\_roundtrip.py} --- \texttt{joint\_roundtrip.py 45}, or
+\texttt{--joints x,z}. Moves each joint out and back and reports how far from its
+start it finished. Joints that are not on the bus, or have no confirmed direction
+mapping, are skipped rather than failed, so it works on a partly assembled arm.
+A leg that stopped early on an endstop or a stall is flagged, because its return
+error describes an interrupted move rather than a drivetrain.
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Re-verify X's $-0.47$\textdegree{} return error with the fixed
+    detector. If it holds, X has roughly twenty times A's lost motion and that is
+    worth understanding.
+    \item A clean 30\textdegree{} round trip on Z, clear of its
+    \texttt{IN\_1} limit.
+    \item Chase the supply dropouts before they cost a long run.
+    \item A's endstop is still dead from the reversed-supply damage; A also needs
+    \texttt{9E 01} before a dual-output sensor has two inputs to report on.
+\end{itemize}
+
 \newpage
 \appendix
 \section*{Appendices --- standing reference}

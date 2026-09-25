@@ -857,6 +857,14 @@ Motor warm but not hot &
 Driver stops responding mid-test &
   Check power and connectors first. This has been an accidental unplug more than
   once. \\
+\textbf{All drivers go silent at once, zero bus-errors} &
+  They have lost power; the bus is fine. A real CAN node at the wrong bitrate
+  still generates errors, so total silence with a clean counter and the adapter
+  still enumerated means nothing is transmitting. If it recurs between runs
+  rather than during them, and on a joint drawing almost nothing, suspect the
+  supply or its connection rather than current draw --- watch the supply's own
+  indicator at the moment it goes to tell a failing supply from failing wiring
+  downstream of it. \\
 \textbf{Encoder tracks perfectly but the arm does not move} &
   \textbf{Suspect the drivetrain, not the driver.} The encoder is on the motor
   shaft, upstream of the reduction, so slipping cycloidal gears produce a flawless
@@ -961,6 +969,12 @@ explicit safety band.
   the separation. Imports the joint table from \texttt{joint\_move.py} so the
   direction mappings live in one place. Run it twice --- a single figure is not
   a result. \\
+\texttt{joint\_roundtrip.py} &
+  \texttt{joint\_roundtrip.py 45}, or \texttt{--joints x,z}. Moves each joint out
+  and back and reports how far from its start it finished. Skips joints that are
+  not on the bus or have no confirmed direction mapping, so it works on a partly
+  assembled arm. Flags a leg that stopped early, whose return error describes an
+  interrupted move rather than a drivetrain. \\
 \bottomrule
 \end{longtable}
 

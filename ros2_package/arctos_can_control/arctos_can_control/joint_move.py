@@ -54,15 +54,19 @@ STALL_WINDOW_S = 1.5
 STALL_GRACE_S = 4.0
 STALL_FRACTION = 0.05          # of expected travel per window
 
-# can_id, gear ratio, board, clockwise byte, limit-port-remap enabled
+# can_id, gear ratio, board, clockwise byte, remap enabled, max safe speed
 # The clockwise byte is None where it has never been confirmed on the machine.
+# max_speed is None where no limit has been measured; it is not a default, it
+# means nobody has looked. Y's 25 is measured: its cycloidal gears slip above
+# that, losing ~7 deg per traverse at 50 and ~20 deg at 150, and the slip is
+# invisible in the encoder because it sits upstream of the reduction.
 JOINTS = {
-    "x": (0x01, 13.5,  "57D", 0x00, False),
-    "y": (0x02, 150.0, "57D", 0x80, False),
-    "z": (0x03, 150.0, "42D", 0x00, True),   # remapped 2026-09-11
-    "a": (0x04, 48.0,  "42D", 0x00, False),  # cw confirmed by eye 2026-09-18
-    "b": (0x05, 67.82, "42D", None, False),
-    "c": (0x06, 67.82, "42D", 0x80, True),   # remapped 2026-09-03
+    "x": (0x01, 13.5,  "57D", 0x00, False, None),
+    "y": (0x02, 150.0, "57D", 0x80, False, 25),    # gears slip above 25
+    "z": (0x03, 150.0, "42D", 0x00, True,  None),  # remapped 2026-09-11
+    "a": (0x04, 48.0,  "42D", 0x00, False, None),  # cw confirmed by eye 2026-09-18
+    "b": (0x05, 67.82, "42D", None, False, None),
+    "c": (0x06, 67.82, "42D", 0x80, True,  None),  # remapped 2026-09-03
 }
 
 
@@ -123,7 +127,7 @@ def main():
                          "record the real value in the JOINTS table.")
     args = ap.parse_args()
 
-    can_id, gear, board, cw_byte, remapped = JOINTS[args.joint]
+    can_id, gear, board, cw_byte, remapped, max_speed = JOINTS[args.joint]
     if args.assume_cw is not None:
         if args.assume_cw not in (0x00, 0x80):
             sys.exit("--assume-cw must be 0x00 or 0x80")
@@ -143,6 +147,12 @@ def main():
 
     if args.degrees <= 0:
         sys.exit("degrees must be positive -- use the direction argument to reverse")
+
+    if max_speed is not None and args.speed > max_speed:
+        print(f"*** speed {args.speed} exceeds joint {args.joint.upper()}'s measured safe "
+              f"maximum of {max_speed}; clamping to {max_speed}.")
+        print(f"*** Above it the gears slip, and the encoder cannot see that happen.")
+        args.speed = max_speed
 
     mask = io_mask(board, remapped)
     counts_per_joint_deg = gear * ENCODER_CPR / 360.0
