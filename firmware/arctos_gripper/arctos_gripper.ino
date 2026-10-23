@@ -17,8 +17,10 @@
  * Deliberately NOT the MKS protocol, so a stray gripper frame can never be
  * mistaken for a joint reply by the Python tooling.
  *
- *   command   (PC -> gripper)   ID 0x07   [0]=0x01  [1]=angle 0..180
+ *   set angle (PC -> gripper)   ID 0x07   [0]=0x01  [1]=angle (clamped)
  *   query     (PC -> gripper)   ID 0x07   [0]=0x02
+ *   close     (PC -> gripper)   ID 0x07   [0]=0x03   to the stop, then back off
+ *   open      (PC -> gripper)   ID 0x07   [0]=0x04
  *   reply     (gripper -> PC)   ID 0x17   [0]=0x01  [1]=angle now  [2]=0xA5
  *
  * Byte [2] of the reply is a fixed signature, so a listener can tell a real
@@ -69,16 +71,61 @@ const uint16_t GRIPPER_REPLY_ID = 0x17;
 
 #define MCP_CRYSTAL MCP_16MHZ             // <-- MCP_8MHZ or MCP_16MHZ. CHECK IT.
 
-// Mechanical travel limits for YOUR gripper. Commands are clamped to these, so
-// a wrong byte cannot drive the servo into its own end stop and stall it.
-const uint8_t SERVO_MIN_DEG = 10;
-const uint8_t SERVO_MAX_DEG = 170;
-const uint8_t SERVO_START_DEG = 90;
+// ---- MECHANICAL LIMITS -- MEASURED ON THE MACHINE 2026-10-23 -------------
+// The servo is coupled to the gripper and cannot reach a hobby servo's nominal
+// 0..180. Its real travel is 30 degrees, found by stepping outward from the
+// closed stop and stopping when the jaws would go no further.
+//
+// Driving past these stalls the servo, which then draws full stall current
+// continuously. On this shared 5V rail that sags the supply the ATmega and the
+// MCP2515 both depend on, so the damage shows up as CAN comms faults rather
+// than as anything obviously mechanical. That is exactly what happened while
+// these numbers were still guesses.
+const uint8_t CLOSED_STOP_DEG = 90;    // jaws fully closed, hard stop
+const uint8_t OPEN_STOP_DEG   = 120;   // jaws fully open, hard stop
+
+// Stay this far inside the open stop in normal use. Nothing is gained by
+// pressing against it, and resting there is a stall held indefinitely.
+const uint8_t OPEN_MARGIN_DEG = 2;
+
+// After a deliberate close, retreat this far. Gripping an object IS a stall by
+// design, so holding the grip means holding stall current unless we back off.
+// Kept small because the whole range is only 30 degrees.
+const uint8_t BACKOFF_DEG = 3;
+
+const uint8_t SERVO_START_DEG = CLOSED_STOP_DEG + BACKOFF_DEG;
 
 // ------------------------------------------------------------------ protocol
 const uint8_t CMD_SET   = 0x01;
 const uint8_t CMD_QUERY = 0x02;
+const uint8_t CMD_CLOSE = 0x03;   // go to the closed stop, then back off
+const uint8_t CMD_OPEN  = 0x04;   // go to the open stop
 const uint8_t REPLY_SIGNATURE = 0xA5;
+
+// Usable band: the closed stop is reachable because gripping needs it, but the
+// open end stops short of its stop. Written without assuming which end is
+// numerically higher, so the limits cannot be silently inverted later.
+uint8_t openTarget() {
+  return (OPEN_STOP_DEG > CLOSED_STOP_DEG)
+       ? (uint8_t)(OPEN_STOP_DEG - OPEN_MARGIN_DEG)
+       : (uint8_t)(OPEN_STOP_DEG + OPEN_MARGIN_DEG);
+}
+
+uint8_t clampToTravel(int16_t deg) {
+  const int16_t a = CLOSED_STOP_DEG;
+  const int16_t b = openTarget();
+  const int16_t lo = (a < b) ? a : b;
+  const int16_t hi = (a < b) ? b : a;
+  if (deg < lo) return (uint8_t)lo;
+  if (deg > hi) return (uint8_t)hi;
+  return (uint8_t)deg;
+}
+
+// One step back from the closed stop, toward open, whichever way that is.
+uint8_t restingClosedAngle() {
+  const int16_t dir = (OPEN_STOP_DEG > CLOSED_STOP_DEG) ? 1 : -1;
+  return clampToTravel((int16_t)CLOSED_STOP_DEG + dir * (int16_t)BACKOFF_DEG);
+}
 
 MCP_CAN CAN(MCP_CS_PIN);
 Servo gripper;
@@ -90,7 +137,6 @@ void sendReply() {
 }
 
 void setup() {
-  Serial.begin(115200);
   gripper.attach(SERVO_PIN);
   gripper.write(currentAngle);
 
@@ -98,11 +144,9 @@ void setup() {
   // and a node that silently fails to init is indistinguishable from one that
   // is not wired in at all.
   while (CAN.begin(MCP_ANY, CAN_500KBPS, MCP_CRYSTAL) != CAN_OK) {
-    Serial.println(F("MCP2515 init failed -- check CS pin wiring and MCP_CRYSTAL"));
     delay(1000);
   }
   CAN.setMode(MCP_NORMAL);   // without this the controller stays in listen-only
-  Serial.println(F("gripper ready: 500kbps, listening on 0x07"));
 }
 
 void loop() {
@@ -118,13 +162,25 @@ void loop() {
   switch (buf[0]) {
     case CMD_SET:
       if (len >= 2) {
-        uint8_t target = buf[1];
-        if (target < SERVO_MIN_DEG) target = SERVO_MIN_DEG;
-        if (target > SERVO_MAX_DEG) target = SERVO_MAX_DEG;
-        currentAngle = target;
+        currentAngle = clampToTravel((int16_t)buf[1]);
         gripper.write(currentAngle);
-        Serial.print(F("angle -> ")); Serial.println(currentAngle);
       }
+      sendReply();
+      break;
+
+    case CMD_CLOSE:
+      // Drive to the stop, give it time to arrive, then retreat. Sitting on the
+      // stop is a stall; this holds the grip without holding stall current.
+      gripper.write(CLOSED_STOP_DEG);
+      delay(400);
+      currentAngle = restingClosedAngle();
+      gripper.write(currentAngle);
+      sendReply();
+      break;
+
+    case CMD_OPEN:
+      currentAngle = openTarget();
+      gripper.write(currentAngle);
       sendReply();
       break;
 
