@@ -19,7 +19,7 @@
  *
  *   set angle (PC -> gripper)   ID 0x07   [0]=0x01  [1]=angle (clamped)
  *   query     (PC -> gripper)   ID 0x07   [0]=0x02
- *   close     (PC -> gripper)   ID 0x07   [0]=0x03   to the stop, then back off
+ *   close     (PC -> gripper)   ID 0x07   [0]=0x03
  *   open      (PC -> gripper)   ID 0x07   [0]=0x04
  *   reply     (gripper -> PC)   ID 0x17   [0]=0x01  [1]=angle now  [2]=0xA5
  *
@@ -71,29 +71,35 @@ const uint16_t GRIPPER_REPLY_ID = 0x17;
 
 #define MCP_CRYSTAL MCP_16MHZ             // <-- MCP_8MHZ or MCP_16MHZ. CHECK IT.
 
-// ---- MECHANICAL LIMITS -- MEASURED ON THE MACHINE 2026-10-23 -------------
-// The servo is coupled to the gripper and cannot reach a hobby servo's nominal
-// 0..180. Its real travel is 30 degrees, found by stepping outward from the
-// closed stop and stopping when the jaws would go no further.
+// ---- TRAVEL LIMITS -- MEASURED ON THE MACHINE 2026-10-23 ----------------
+// Two different things, kept deliberately separate:
 //
-// Driving past these stalls the servo, which then draws full stall current
-// continuously. On this shared 5V rail that sags the supply the ATmega and the
-// MCP2515 both depend on, so the damage shows up as CAN comms faults rather
-// than as anything obviously mechanical. That is exactly what happened while
-// these numbers were still guesses.
-const uint8_t CLOSED_STOP_DEG = 90;    // jaws fully closed, hard stop
-const uint8_t OPEN_STOP_DEG   = 120;   // jaws fully open, hard stop
+//   the MECHANICAL stops, where the gripper physically cannot go further, and
+//   the COMMANDED limits, which stay clear of them.
+//
+// The distinction is not pedantry. Resting on the closed mechanical stop was
+// measured to take this node off the bus completely: 20 queries at 93 and at
+// 100 both returned 100% replies, 20 queries parked at the 90 stop returned 0%,
+// and the command to back off could not get through because the node had
+// already stopped answering. A stalled hobby servo draws full stall current
+// continuously, and on this shared 5V rail that sags the supply the ATmega and
+// the MCP2515 both run from.
+//
+// So the closed limit is held 10 degrees clear of the stop. The gripper closes
+// less far than it mechanically could; that is the price of never stalling.
+const uint8_t MECH_CLOSED_STOP = 90;    // measured -- NEVER commanded
+const uint8_t MECH_OPEN_STOP   = 120;   // measured -- NEVER commanded
 
-// Stay this far inside the open stop in normal use. Nothing is gained by
-// pressing against it, and resting there is a stall held indefinitely.
-const uint8_t OPEN_MARGIN_DEG = 2;
+const uint8_t CLOSED_LIMIT = 100;   // 10 deg clear of the closed stop
+const uint8_t OPEN_LIMIT   = 118;   //  2 deg clear of the open stop
 
-// After a deliberate close, retreat this far. Gripping an object IS a stall by
-// design, so holding the grip means holding stall current unless we back off.
-// Kept small because the whole range is only 30 degrees.
-const uint8_t BACKOFF_DEG = 3;
+// Rest this far off CLOSED_LIMIT after closing. With CLOSED_LIMIT already well
+// clear of the mechanical stop this is no longer required to escape a stall --
+// it is kept because it is what is flashed and verified on the machine, and it
+// costs nothing. Set to 0 for a firmer grip; the band is unaffected either way.
+const uint8_t REST_OFFSET_DEG = 3;
 
-const uint8_t SERVO_START_DEG = CLOSED_STOP_DEG + BACKOFF_DEG;
+const uint8_t SERVO_START_DEG = CLOSED_LIMIT + REST_OFFSET_DEG;
 
 // ------------------------------------------------------------------ protocol
 const uint8_t CMD_SET   = 0x01;
@@ -102,29 +108,14 @@ const uint8_t CMD_CLOSE = 0x03;   // go to the closed stop, then back off
 const uint8_t CMD_OPEN  = 0x04;   // go to the open stop
 const uint8_t REPLY_SIGNATURE = 0xA5;
 
-// Usable band: the closed stop is reachable because gripping needs it, but the
-// open end stops short of its stop. Written without assuming which end is
-// numerically higher, so the limits cannot be silently inverted later.
-uint8_t openTarget() {
-  return (OPEN_STOP_DEG > CLOSED_STOP_DEG)
-       ? (uint8_t)(OPEN_STOP_DEG - OPEN_MARGIN_DEG)
-       : (uint8_t)(OPEN_STOP_DEG + OPEN_MARGIN_DEG);
-}
-
+// Clamp to the commanded band. Written without assuming which limit is
+// numerically higher, so the two cannot be silently inverted by a later edit.
 uint8_t clampToTravel(int16_t deg) {
-  const int16_t a = CLOSED_STOP_DEG;
-  const int16_t b = openTarget();
-  const int16_t lo = (a < b) ? a : b;
-  const int16_t hi = (a < b) ? b : a;
+  const int16_t lo = (CLOSED_LIMIT < OPEN_LIMIT) ? CLOSED_LIMIT : OPEN_LIMIT;
+  const int16_t hi = (CLOSED_LIMIT < OPEN_LIMIT) ? OPEN_LIMIT : CLOSED_LIMIT;
   if (deg < lo) return (uint8_t)lo;
   if (deg > hi) return (uint8_t)hi;
   return (uint8_t)deg;
-}
-
-// One step back from the closed stop, toward open, whichever way that is.
-uint8_t restingClosedAngle() {
-  const int16_t dir = (OPEN_STOP_DEG > CLOSED_STOP_DEG) ? 1 : -1;
-  return clampToTravel((int16_t)CLOSED_STOP_DEG + dir * (int16_t)BACKOFF_DEG);
 }
 
 MCP_CAN CAN(MCP_CS_PIN);
@@ -169,17 +160,15 @@ void loop() {
       break;
 
     case CMD_CLOSE:
-      // Drive to the stop, give it time to arrive, then retreat. Sitting on the
-      // stop is a stall; this holds the grip without holding stall current.
-      gripper.write(CLOSED_STOP_DEG);
+      gripper.write(CLOSED_LIMIT);
       delay(400);
-      currentAngle = restingClosedAngle();
+      currentAngle = clampToTravel((int16_t)CLOSED_LIMIT + (int16_t)REST_OFFSET_DEG);
       gripper.write(currentAngle);
       sendReply();
       break;
 
     case CMD_OPEN:
-      currentAngle = openTarget();
+      currentAngle = OPEN_LIMIT;
       gripper.write(currentAngle);
       sendReply();
       break;
