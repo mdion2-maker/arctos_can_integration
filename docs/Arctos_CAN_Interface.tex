@@ -131,6 +131,51 @@ A's \texttt{0x04} and its 48:1 ratio are empirically verified; the rest are conf
 values.
 \end{caution}
 
+\subsection{Confirmed per-joint parameters}
+\label{sec:joint-params}
+Everything below was established on the machine, not read from a config file.
+Blank means not yet confirmed --- treat it as unknown rather than assuming a
+default.
+
+\begin{center}
+\begin{tabular}{lllllll}
+\toprule
+\textbf{J} & \textbf{Board} & \textbf{Gear} & \textbf{Remap} & \textbf{CW byte}
+  & \textbf{Endstops} & \textbf{Envelope} \\ \midrule
+X & 57D & 13.5   & no  & \texttt{0x00} & one, \texttt{IN\_2} (CW side) & --- \\
+Y & 57D & 150.0  & no  & \texttt{0x80} & \texttt{IN\_1} CW, \texttt{IN\_2} CCW & 158.24\textdegree{} \\
+Z & 42D & 150.0  & \textbf{yes} & \texttt{0x00} & \texttt{IN\_1}=\texttt{En} CW, \texttt{IN\_2}=\texttt{Dir} CCW & 124.4\textdegree{} $\pm$0.3 \\
+A & 42D & 48.0   & no  & \texttt{0x00} &  & --- \\
+B & 42D & 67.82  &     &               &  & --- \\
+C & 42D & 67.82  & \textbf{yes} & \texttt{0x80} & on \texttt{En}/\texttt{Dir} & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{caution}{The clockwise byte does not transfer between joints}
+\texttt{0x00} is clockwise on X and Z and counter-clockwise on Y and C. Four
+joints, no pattern. An earlier draft proposed that ``encoder counting down means
+clockwise'' held across joints; Y disproved it. Each mapping in the table was
+established by watching the joint turn, and A and B are blank because nobody has
+watched them yet. \texttt{joint\_move.py} refuses to move a joint whose mapping is
+blank rather than guess, because a guess is a coin flip on direction.
+\end{caution}
+
+\begin{caution}{Per-joint quirks that have each cost a session}
+\begin{itemize}
+    \item \textbf{X has only one endstop}, on \texttt{IN\_2}. \texttt{GoHome}
+    homes to \texttt{IN\_1}, so it would never terminate --- \textbf{never send
+    \texttt{0x91} to X}.
+    \item \textbf{Y's gears slip above speed 25}, losing $\sim$7\textdegree{}
+    per traverse at 50 and $\sim$20\textdegree{} at 150. Calibrate it at 25.
+    \item \textbf{Z and C are remapped}; their endstops are on \texttt{En} and
+    \texttt{Dir}, not \texttt{IN\_1}, and \texttt{Com} must be tied high.
+    \item \textbf{X's detection zone is 10--17\textdegree{} wide} but releases in
+    0.062\textdegree{} going the other way, so home must sit clear of it. Y's and
+    Z's are only a few degrees.
+\end{itemize}
+\end{caution}
+
 \begin{caution}{Always confirm a CAN ID against real hardware}
 Run the read-only scan before trusting any table, including the one above. It sends
 only the \texttt{0x31} query and never enables coils:
@@ -324,7 +369,13 @@ time, including for the emergency stop.
 \texttt{READ\_ERROR}        & \texttt{0x39} & Signed 32-bit deficit. Grows when stalled. \\
 \texttt{READ\_ENABLE\_STATE} & \texttt{0x3A} & \texttt{01} enabled, \texttt{00} disabled. Verified. \\
 \texttt{READ\_SHAFT\_PROTECTION} & \texttt{0x3E} & \texttt{00} clear. Non-zero latches the driver. \\
+\texttt{READ\_IO}             & \texttt{0x34} & Input and output pin states. Verified. Section~\ref{sec:endstops}. \\
 \texttt{SET\_WORKING\_MODE} & \texttt{0x82} & See the panel caution. \\
+\texttt{SET\_EN\_ACTIVE}    & \texttt{0x85} & \texttt{00} low, \texttt{01} high, \texttt{02} always on. \\
+\texttt{SET\_AXIS\_ZERO}     & \texttt{0x92} & Zeroes the counter where it stands. No motion. \\
+\texttt{SET\_HOME\_PARAMS}   & \texttt{0x90} & Trigger level, direction, speed, \texttt{EndLimit}. \\
+\texttt{GO\_HOME}            & \texttt{0x91} & Runs onto the limit. \textbf{Unlocks the shaft} if \texttt{EndLimit=1}. \\
+\texttt{LIMIT\_PORT\_REMAP}  & \texttt{0x9E} & \textbf{Required for 42D endstops here.} No read-back. \\
 \texttt{ENABLE\_SHAFT\_PROTECTION} & \texttt{0x88} & \textbf{Avoid.} False positives, and it latches. \\
 \texttt{ENABLE\_MOTOR}      & \texttt{0xF3} & \texttt{01} enable, \texttt{00} disable. Verified. \\
 \texttt{RELATIVE\_POSITION} & \texttt{0xF4} & Unsafe packing. See the motion section. \\
@@ -520,6 +571,225 @@ Do not use any of them.
 Use only the formula above.
 \end{caution}
 
+\section{Endstops and homing}
+\label{sec:endstops}
+
+\subsection{Where the sensor actually connects}
+There are two wiring schemes and they are mutually exclusive. The vendor default
+puts a limit switch on \texttt{EVCC}, \texttt{EGND} and \texttt{IN\_1}, all on the
+same green terminal block as the CAN pair --- top to bottom, that block is
+\texttt{5V}, \texttt{GND}, \texttt{IN}, \texttt{CAN\_H}, \texttt{CAN\_L}. The
+silkscreen is split, \texttt{5V/GND/IN} printed above the block and \texttt{CAN H L}
+below it, which is easy to misread if you only look at one end.
+
+\textbf{This build does not use that scheme.} It follows the Arctos documentation,
+which for the 42D axes enables \emph{limit port remap} and moves the limits to the
+opposite connector: left limit to \texttt{En}, right limit to \texttt{Dir}, with
+\texttt{Com} tied to the matching high level. \texttt{En} and \texttt{Dir} are
+opto-isolated, so with \texttt{Com} floating they register nothing at all.
+
+\begin{caution}{The 42D has no \texttt{IN\_2}, which is why the remap exists}
+Per the vendor manual's IO table, \texttt{IN\_1} (home / left limit) is present on
+both 57D and 42D, but \texttt{IN\_2} (right limit) is 57D only. Remapping is how a
+42D gets a second endstop. On a 57D the remap is optional, since that board has a
+real \texttt{IN\_2}.
+\end{caution}
+
+\begin{caution}{No DIP switch is involved on the 42D}
+The \texttt{SW1} pin-2 instruction that circulates for these boards belongs to the
+57D. On the 42D, \texttt{EVCC}/\texttt{EGND} is the board's own 5\,V, rated 20\,mA
+--- the whole budget for the sensor and its indicator LEDs.
+\end{caution}
+
+\subsection{Enabling the remap}
+\begin{lstlisting}
+# LIMIT_PORT_REMAP (0x9E), enable = 01, CAN ID 0x06
+# checksum 0x06 + 0x9E + 0x01 = 0xA5
+cansend can0 006#9E01A5
+# reply 9E 01 A5 -> status 1, set success
+\end{lstlisting}
+
+The manual documents \texttt{0x9E} as a write only. \textbf{Nothing reports whether
+remap is currently on}, so it cannot be queried --- only set. Two further conditions
+must hold or it does nothing useful: the driver must be in a serial
+(\texttt{SR\_}) work mode, because in any \texttt{CR\_} mode \texttt{En} and
+\texttt{Dir} are the pulse interface's own enable and direction inputs; and
+\texttt{Com} must be wired.
+
+\subsection{Reading the pins: \texttt{0x34}}
+The reply is \texttt{[0x34][status][checksum]}. The status byte:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Bit} & \textbf{Pin} & \textbf{After remap, reports} \\ \midrule
+bit 0 & \texttt{IN\_1} & the \texttt{En} pin \\
+bit 1 & \texttt{IN\_2} & the \texttt{Dir} pin \\
+bit 2 & \texttt{OUT\_1} & stall indication, 57D only \\
+bit 3 & \texttt{OUT\_2} & reserved, 57D only \\
+bits 4--7 & \multicolumn{2}{l}{reserved} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Reading \texttt{0x34} does \emph{not} require \texttt{EndLimit}; that setting only
+governs whether the driver acts on a limit. Measured on Joint C with a dual-output
+hall sensor, one output per magnet pole:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Byte} & \textbf{Meaning} & \\ \midrule
+\texttt{0x03} & both idle & resting state \\
+\texttt{0x02} & bit 0 low & north pole on \texttt{En} \\
+\texttt{0x01} & bit 1 low & south pole on \texttt{Dir} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Both are \textbf{active low}, so the default \texttt{Hm\_Trig = Low} is correct and
+needs no change.
+
+\begin{caution}{A resting \texttt{0x01} before remap looks identical to a dead sensor}
+Without the remap, bit 0 reports the physical \texttt{IN\_1} terminal. On this build
+that terminal is deliberately empty, so it idles high forever regardless of the
+magnet. Two sessions and two different sensors were spent on this before the cause
+was found. If an endstop reads nothing, re-send \texttt{9E 01} before suspecting the
+wiring.
+\end{caution}
+
+\subsection{Homing a joint in practice}
+The procedure that has worked on X, Y and Z, and which does not depend on any
+driver setting that cannot be read back:
+
+\begin{enumerate}
+    \item \textbf{Search} toward the chosen limit at a fixed slow speed, watching
+    \texttt{0x34} directly and stopping on the bit yourself. Do not use
+    \texttt{GoHome (0x91)}: its direction lives in \texttt{Hm\_Dir}, which cannot
+    be queried, and the manual says the motor ``will keep running until it hits
+    the limit switch'' --- with no switch on the watched input there is no
+    terminating condition.
+    \item \textbf{Record the trigger} position. That edge is the reference.
+    \item \textbf{Step clear of the detection zone.} Parking inside it leaves the
+    joint sitting on an asserted limit at its own home.
+    \item \textbf{\texttt{SET\_AXIS\_ZERO (0x92)}} where it rests. Readings then
+    become joint angles instead of offsets from an arbitrary power-on point.
+\end{enumerate}
+
+\begin{caution}{A homed zero does not survive a power cycle}
+The encoder counter resets to zero at power-up regardless of what \texttt{0x92}
+was told earlier, so a joint reading \texttt{0} is not necessarily at home ---
+it may simply have just been powered on. Re-home after any power interruption.
+This is the same reason a stored trigger position is only ever useful for
+choosing a search bound: Joint X's endstop was 112\textdegree{} from the start
+position one session, 173.8\textdegree{} the next and 290.1\textdegree{} the
+one after.
+\end{caution}
+
+\subsection{Making a homing reference repeatable}
+An endstop's trigger point is only a usable reference if it is approached the same
+way every time. Two effects, both measured:
+
+\textbf{Detection zones are asymmetric, and the sharp edge is directional.} A
+magnet holds an input asserted over a band, not at a point. On Joint X that band
+runs 10--17\textdegree{} wide, and backing out of it releases the input after only
+\textbf{0.062\textdegree{}}. So the edge encountered on the way \emph{in} is
+sharp and repeatable, while the far side is a plateau. Approaching from the other
+direction trips somewhere in the band and gives a different answer each time.
+Fix the approach direction and make it part of the procedure. Zone widths are
+per-joint: Joint Y's releases in 2--4\textdegree{} where X's takes 10--17.
+
+\textbf{Trigger position drifts with approach speed.} The same endstop on Joint Y,
+approached clockwise twice, reported \texttt{raw} 411950 at speed 50 and 411633 at
+speed 25 --- the faster approach recording the trigger further along in the
+direction of travel. That is detection-and-stop latency. The bias is small and
+systematic, so a joint homed at varying speeds has a reference that moves by
+roughly that much. Standardise on one slow speed for the final approach.
+
+Repeatability with both controlled: \textbf{0.046\textdegree{}} across a
+165\textdegree{} round trip.
+
+\textbf{Two-phase approach.} Creeping the whole way is slow --- Joint Y's full
+envelope takes about 165\,s at speed 25. Running all but the last
+15\textdegree{} at speed 150 and creeping the remainder covers it in about
+40\,s, with the same precision where it matters. Park the joint clear of the
+detection zone afterwards, or it sits on an asserted limit at its own home.
+
+\begin{caution}{Absolute positions do not survive a power cycle}
+The encoder counter zeroes at power-on, and the arm may be moved between sessions.
+A previously recorded trigger position is a rough expectation, never a target ---
+Joint X's endstop was 112\textdegree{} from the start position one session and
+173.8\textdegree{} the next. Re-establish the reference by searching, then
+\texttt{SET\_AXIS\_ZERO (0x92)} so subsequent readings are joint angles.
+\end{caution}
+
+\subsection{When a sensor's LEDs say something impossible}
+On a dual-output sensor --- one output per magnet pole, an LED on each --- the
+two LEDs are mutually exclusive by physics. A single die cannot be presented
+with a north and a south pole at the same point, so \textbf{both LEDs lit at once
+is not a detection state}. Neither is both lit and unresponsive to a magnet: that
+is both outputs stuck, which is a supply or wiring fault rather than anything
+magnetic.
+
+On these modules the indicator usually sits between \texttt{+V} and the output
+pin, so it lights when the output is pulled low. Both outputs held low ---
+because the chip is not running, or its outputs are damaged, or the pins are
+shorted to ground --- lights both LEDs permanently. Things that produce it:
+
+\begin{itemize}
+    \item \textbf{Supply reversed or on the wrong pin.} A four-pin dual-output
+    module (\texttt{+V}, \texttt{GND}, and two outputs) reversed end-for-end puts
+    \texttt{+V} on an output and an output on \texttt{+V}. The chip is then
+    fed through a pin that was never meant to carry it, and does not run.
+    \item \textbf{Overvoltage.} These are 5\,V parts. On a 42D,
+    \texttt{EVCC}/\texttt{EGND} is the board's own 5\,V rated 20\,mA --- two lit
+    LEDs plus the die can approach that budget, and anything fed from a 12--24\,V
+    rail instead will be damaged outright.
+    \item \textbf{Output pins shorted to ground} by a mis-landed wire, which pulls
+    both indicators on regardless of what the sensor is doing.
+\end{itemize}
+
+\begin{caution}{A reversal damages the part; correcting the wiring does not undo it}
+These hall modules have \textbf{no reverse-polarity protection}. Feeding the
+supply backwards forward-biases the die's substrate diode, and the usual result
+is a destroyed output stage that latches --- which lights both indicators
+permanently and never responds to a magnet again. So ``it was plugged in
+backwards at first'' is a sufficient explanation on its own, and the symptom
+will persist after the wiring is corrected.
+
+What limits the damage is how hard the supply could push. On a 42D,
+\texttt{EVCC} is the board's own 5\,V rated 20\,mA, and that current limit may
+be enough to have saved a briefly reversed module --- it is worth testing before
+assuming the part is dead.
+
+Separate the sensor from the harness by swapping: put a \emph{known-good} sensor
+from a working joint onto this joint's harness. If the good sensor works here,
+the original is dead and should be replaced. If the good sensor misbehaves here
+too, the fault is in the harness or the driver's \texttt{EVCC} rail --- check
+that rail directly, since reverse current can damage it as well, and a driver
+that is perfectly healthy over CAN can still have a dead 5\,V output.
+\end{caution}
+
+Check the supply before suspecting the sensor: measure \texttt{+V} to
+\texttt{GND} at the module and confirm it reads about 5\,V with the right
+polarity. A sensor whose LEDs respond correctly to each pole \emph{separately} is
+working; that is the state to get back to before looking at anything on the CAN
+side.
+
+\subsection{Homing}
+\texttt{SET\_HOME\_PARAMS (0x90)} carries \texttt{homeTrig} (0 low, 1 high),
+\texttt{homeDir} (0 CW, 1 CCW), a 16-bit \texttt{homeSpeed} in rpm, and
+\texttt{EndLimit} (0 disable, 1 enable). \texttt{GO\_HOME (0x91)} answers
+\texttt{0} fail, \texttt{1} started, \texttt{2} complete. The manual requires a
+\texttt{GoHome} after enabling \texttt{EndLimit} or changing any limit parameter.
+
+\begin{caution}{\texttt{EndLimit=1} unlocks the shaft at the left limit}
+The manual is explicit: when \texttt{EndLimit} is enabled and a \texttt{GoHome}
+reaches the left limit switch, the driver \textbf{unlocks the shaft}. On a belted,
+gravity-loaded joint that is a drop. Test with the belt off. Set
+\texttt{EndLimit=0} if the axis must stay locked after homing.
+\end{caution}
+
 \section{Safety}
 \label{sec:safety}
 
@@ -587,6 +857,52 @@ Motor warm but not hot &
 Driver stops responding mid-test &
   Check power and connectors first. This has been an accidental unplug more than
   once. \\
+\textbf{All drivers go silent at once, zero bus-errors} &
+  They have lost power; the bus is fine. A real CAN node at the wrong bitrate
+  still generates errors, so total silence with a clean counter and the adapter
+  still enumerated means nothing is transmitting. If it recurs between runs
+  rather than during them, and on a joint drawing almost nothing, suspect the
+  supply or its connection rather than current draw --- watch the supply's own
+  indicator at the moment it goes to tell a failing supply from failing wiring
+  downstream of it. \\
+\textbf{Encoder tracks perfectly but the arm does not move} &
+  \textbf{Suspect the drivetrain, not the driver.} The encoder is on the motor
+  shaft, upstream of the reduction, so slipping cycloidal gears produce a flawless
+  trace --- delivered counts matching commanded --- for an output going nowhere.
+  Slip also \emph{unloads} the motor, so no stall, torque or position-error
+  heuristic will fire. Confirm motion at the output before trusting any encoder
+  result. \\
+Endstop still silent after enabling \texttt{EndLimit} &
+  \texttt{EndLimit} does not make an input \emph{visible}. It governs only
+  whether the driver \emph{acts} on a limit. Reading the pin via \texttt{0x34}
+  needs no \texttt{EndLimit} at all --- on a 42D the missing piece is almost
+  always the limit port remap. \\
+Endstop never changes \texttt{0x34}, sensor LED does light &
+  On a 42D, limit port remap is probably not enabled, so bit 0 is reporting the
+  empty \texttt{IN\_1} terminal rather than \texttt{En}. Send \texttt{9E 01}.
+  There is no read-back, so it cannot be confirmed by query.
+  Section~\ref{sec:endstops}. \\
+Both endstop inputs read low at rest &
+  Not ``nothing connected'' --- an unwired input reads \emph{high}. Most likely a
+  reversed 3-pin sensor plug: \texttt{+V} sits in the middle, so reversing it
+  swaps \texttt{Signal} and \texttt{GND} and straps the driver input to the
+  module's ground while leaving the sensor powered and its LED lit. Turn the plug
+  around. \\
+Sensor LED lights but the \texttt{0x34} bit does not move &
+  The sensor is detecting; the signal is not reaching the input pin. The fault is
+  in the wire between them. Watching LED and bit together is what localises this. \\
+Endstop bit flickers rapidly while parked &
+  A magnet sitting at the edge of the sensor's range, crossing its threshold
+  repeatedly. Release edges are narrow --- 0.062\textdegree{} measured on Joint X.
+  Move the sensor or magnet; do not fix it in software. \\
+A move continues after the script exits &
+  Expected. \texttt{ENABLE\_MOTOR 00} does not cancel an in-flight \texttt{0xFD};
+  only \texttt{EMERGENCY\_STOP (0xF7)} does. Send \texttt{0xF7} before the coil
+  disable. \\
+Motors hold torque the moment they are powered &
+  The \texttt{En} option is set to \texttt{Hold} (always enabled). Set it back to
+  active-low with \texttt{SET\_EN\_ACTIVE (0x85)} data \texttt{00}. Do not apply
+  this to a joint using limit port remap, where \texttt{En} is a limit input. \\
 \bottomrule
 \end{longtable}
 
@@ -629,6 +945,36 @@ explicit safety band.
 \texttt{joint\_position\_control\_test.py} &
   Stepped position moves with retry. Superseded by the unstick variants for a
   suspect mesh. \\
+\texttt{joint\_endstop\_test.py} &
+  Read-only live monitor of the \texttt{0x34} byte. Sends nothing else, so it is safe
+  on an assembled arm. Prints only when the byte changes. \\
+\texttt{joint\_endstop\_dwell.py} &
+  Timestamps every endstop edge and reports how long each trigger held, with a
+  solid/chatter/marginal verdict. Use it when the monitor above shows a trigger but
+  you need to know whether it is stable; that script has no timestamps, so a 50\,ms
+  tap and a two-second hold look identical there. \\
+\texttt{joint\_io\_diff.py} &
+  Sweeps every documented read-only register with the magnet away and then held on,
+  reporting any byte that differs. For when an endstop does not appear on
+  \texttt{0x34} at all. \\
+\texttt{joint\_magnet\_probe.py} &
+  Checks whether an external magnet disturbs the encoder reading. \\
+\texttt{joint\_move.py} &
+  \texttt{joint\_move.py z cw 15}. One joint, a named direction, a distance.
+  Direction is a name rather than a byte because the byte does not transfer
+  between joints; unconfirmed joints are refused rather than guessed at. Endstop
+  and stall aborts on by default, \texttt{0xF7} before the coil disable. \\
+\texttt{joint\_calibrate.py} &
+  \texttt{joint\_calibrate.py z}. Sweeps to both limits at one speed and reports
+  the separation. Imports the joint table from \texttt{joint\_move.py} so the
+  direction mappings live in one place. Run it twice --- a single figure is not
+  a result. \\
+\texttt{joint\_roundtrip.py} &
+  \texttt{joint\_roundtrip.py 45}, or \texttt{--joints x,z}. Moves each joint out
+  and back and reports how far from its start it finished. Skips joints that are
+  not on the bus or have no confirmed direction mapping, so it works on a partly
+  assembled arm. Flags a leg that stopped early, whose return error describes an
+  interrupted move rather than a drivetrain. \\
 \bottomrule
 \end{longtable}
 

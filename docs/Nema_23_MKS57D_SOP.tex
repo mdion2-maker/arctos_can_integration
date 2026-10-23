@@ -139,6 +139,7 @@ CAN Rate & \texttt{500} \\
 CAN Response, shown as CANRSP & \texttt{ENABLE} \\
 CAN CRC & \texttt{SUM-8} \\
 Working current & 2.8~A or below, the NEMA 23's rating \\
+Working mode & \texttt{SR\_vFOC} --- see the caution below \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -149,6 +150,29 @@ Power-cycle after saving.
 A 42D in this project was found storing 3000~mA against a 1.2~A motor. On a 2.8~A
 NEMA 23 the consequences of an over-set current are correspondingly larger.
 \end{caution}
+
+\begin{caution}{Set the working mode to \texttt{SR\_vFOC}, not a \texttt{CR\_} mode}
+Carried over from the 42D procedure and \textbf{not yet confirmed on 57D hardware}, like
+the rest of this step. The controller ships in \texttt{CR\_vFOC}. The \texttt{CR\_} modes
+drive the motor from the physical pulse interface (\texttt{STP}/\texttt{DIR}/\texttt{En});
+the \texttt{SR\_} modes drive it from serial and CAN commands, which is how this arm is
+controlled. \texttt{arctos\_interface.cpp}'s \texttt{setupMotorParameters()} sends
+\texttt{SET\_WORKING\_MODE (0x82)} with \texttt{SR\_vFOC} (value 5) to every joint.
+
+A mode mismatch \textbf{imitates a communication fault}: the controller accepts a frame and
+acknowledges its checksum without turning the shaft, so a ``no motion'' result looks like
+wiring or CAN. Note also that unlike the 42D, the 57D has a real \texttt{IN\_2} input and so
+does not need limit port remap to get a second endstop --- but if remap is used anyway, the
+same serial-mode restriction applies.
+\end{caution}
+
+The mode can also be set over CAN rather than on the panel:
+
+\begin{lstlisting}
+# SET_WORKING_MODE (0x82) = SR_vFOC (5), CAN ID 0x01
+# checksum 0x01 + 0x82 + 0x05 = 0x88
+cansend can0 001#820588
+\end{lstlisting}
 
 \passif{Settings survive a power cycle.}
 \failif{If the menu differs from the above, record what it actually offers and update
@@ -346,6 +370,45 @@ Speed limit       & measured and recorded above \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\section*{Endstops --- wiring and verification \verified}
+
+The 57D has \textbf{two real limit inputs}, \texttt{IN\_1} and \texttt{IN\_2}, so
+unlike the 42D it needs \textbf{no limit port remap}. Wire each sensor to
+\texttt{EVCC}, \texttt{EGND} and its input on the left green block, and set
+\texttt{SW1} pins 2 and 3 ON so the board feeds the sensors its own 5\,V.
+
+Check the pins with the joint stationary, passing a magnet at each sensor:
+
+\begin{lstlisting}
+python3 joint_endstop_test.py --can-id 0x01
+\end{lstlisting}
+
+\passif{Resting byte \texttt{0x0F}; one sensor drops it to \texttt{0x0E}
+(\texttt{IN\_1}), the other to \texttt{0x0D} (\texttt{IN\_2}), returning to
+\texttt{0x0F} between passes.}
+\failif{Nothing moves. An unwired 57D input reads \emph{high}, so a reading of
+\emph{low} at rest is not ``not connected'' --- suspect a reversed 3-pin plug,
+which swaps \texttt{Signal} and \texttt{GND} around the middle \texttt{+V} pin
+and straps the input to ground while the sensor stays powered and its LED still
+works.}
+
+\begin{caution}{\texttt{EndLimit} is not what makes an endstop readable}
+\texttt{EndLimit} governs only whether the driver \emph{acts} on a limit.
+\texttt{0x34} reports the pin regardless. If an input is not reporting, enabling
+\texttt{EndLimit} will not change that.
+\end{caution}
+
+Note which sensor lands on which input before homing. \texttt{GoHome} homes to
+\texttt{IN\_1}; a joint whose only sensor sits on \texttt{IN\_2} cannot be homed
+by the driver at all. Record the mapping and the joint's travel with:
+
+\begin{lstlisting}
+python3 joint_calibrate.py y
+\end{lstlisting}
+
+Run it twice at the same speed --- a single figure is not a result, and approach
+speed biases the trigger position from both ends at once.
 
 \section*{Step 11 --- Shutdown \verified}
 
