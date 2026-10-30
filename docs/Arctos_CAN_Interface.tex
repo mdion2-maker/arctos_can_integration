@@ -888,6 +888,18 @@ Both endstop inputs read low at rest &
   swaps \texttt{Signal} and \texttt{GND} and straps the driver input to the
   module's ground while leaving the sensor powered and its LED lit. Turn the plug
   around. \\
+A 42D rests at \texttt{0x01} &
+  Treat this as \textbf{remap off}, not as a triggered limit. On a 42D the byte
+  is the same either way: remap off makes bit 1 a phantom reading 0, while remap
+  on with \texttt{Dir} triggered reads identically. \texttt{0x9E} has no
+  read-back, so toggle it and watch the byte move. Joint C's remap turned itself
+  off between sessions and was misreported as a triggered limit for weeks. \\
+Endstop fails, then works after a swap &
+  \textbf{Swap the suspect part back before believing it.} Unplugging and
+  replugging is itself a change, and the one most likely to clear an
+  intermittent. If the fault does not return with the original part refitted,
+  the part was never at fault and the problem is seating or contact --- which
+  will recur, most likely while the harness is flexing under motion. \\
 Sensor LED lights but the \texttt{0x34} bit does not move &
   The sensor is detecting; the signal is not reaching the input pin. The fault is
   in the wire between them. Watching LED and bit together is what localises this. \\

@@ -1511,6 +1511,115 @@ error describes an interrupted move rather than a drivetrain.
     \texttt{9E 01} before a dual-output sensor has two inputs to report on.
 \end{itemize}
 
+\section{2026-10-23 to 10-30 --- Joint B's endstops, and an intermittent that looked like six different faults}
+\label{sec:session-2026-10-30}
+Joint B's endstops did not work. Finding out why took three sessions, and almost
+every intermediate conclusion was wrong. The resolution is worth less than the
+record of how the wrong turns happened, so both are here.
+
+\subsection{What was eliminated, and what that was worth}
+In order: limit port remap toggled off and on with the byte confirmed tracking
+it; work mode set to \texttt{SR\_vFOC} over CAN and then again on the driver's
+own panel; \texttt{En} active level tried both low and high; the physical
+\texttt{IN\_1} terminal watched with remap disabled; and every driver on the bus
+watched simultaneously in case a cable had landed on a neighbour.
+
+All negative. None of it was the problem. \textbf{Every one of those tests was
+reasoning about the driver, and the fault was never in the driver.}
+
+\subsection{The LED that proved nothing}
+The sensor's indicator LED lit correctly under a magnet throughout. I treated
+that as proof the sensor was good and therefore that the fault lay between the
+sensor and the driver --- which sent me chasing \texttt{Com} wiring, ground
+references and opto-isolator current loops for two sessions.
+
+\begin{caution}{An indicator LED is weak evidence either way}
+On these modules the LED sits between \texttt{+V} and the output, so it lights
+whenever the output pulls low. That tells you the sensor detects and its output
+moves. It does \emph{not} tell you the output can drive an optocoupler, and it
+does not tell you the signal conductor reaches the driver. Watching the LED and
+the \texttt{0x34} bit together localises a fault; watching the LED alone invites
+exactly the wrong conclusion.
+\end{caution}
+
+\subsection{The swap test, and the retest that overturned it}
+Moving the sensor and its cable onto a driver already proven to read sensors on
+\texttt{En}/\texttt{Dir} produced nothing. Fitting a known-good sensor to the
+same cable produced an immediate, clean trigger. I concluded the sensor was
+faulty and started to write that up.
+
+\textbf{The user asked for the original sensor to be refitted and retested. It
+worked --- three clean triggers.} The conclusion I had been one step from
+recording was wrong.
+
+\begin{caution}{A single swap does not identify a faulty part}
+Swapping a suspect component and seeing the fault clear shows only that
+\emph{something changed}. On a connector-based assembly, unplugging and
+replugging is itself a change, and it is the one most likely to fix an
+intermittent. Always swap the suspect part \emph{back} and confirm the fault
+returns. If it does not return, the part was never the problem and the real
+fault is in the seating or the contact.
+\end{caution}
+
+\subsection{What the fault actually was}
+Intermittent, somewhere in the connection path. The same sensor, on the same
+cable, into the same driver, failed across two sessions and then worked with
+nothing meaningfully changed except that everything had been unplugged and
+replugged. Driver \texttt{0x05}, its \texttt{Com}, its opto inputs, its remap
+and its cable are all demonstrably fine; so is the sensor.
+
+After a full rewire, \textbf{both} of B's sensors trigger correctly for the
+first time: \texttt{0x03} to \texttt{0x02} on \texttt{En}, \texttt{0x03} to
+\texttt{0x01} on \texttt{Dir}, both active low, and no other joint reacting ---
+so both cables land on the right driver.
+
+This is a fix by reseating, not by diagnosis. It may recur, and the place it
+will recur is while the arm is moving and flexing the harness.
+
+\subsection{Joint C's remap had silently turned off}
+Found during this work: C rested at \texttt{0x01}, which on a 42D is both ``remap
+off, bit 1 is a phantom'' and ``remap on, \texttt{Dir} triggered''. It was the
+former. C's remap had been enabled on 2026-09-03 and was off again by 10-30,
+with nobody having disabled it deliberately.
+
+\begin{caution}{Check remap state at the start of every session}
+\texttt{0x9E} has no read-back, so the only way to know is to toggle it and watch
+the byte move. A 42D resting at \texttt{0x01} should be treated as remap-off
+until proven otherwise. I reported ``C: \texttt{IN\_2} triggered'' in health
+checks for weeks on the strength of that byte; it was the phantom bit the whole
+time.
+\end{caution}
+
+\subsection{Two corrections to my own reporting}
+\begin{itemize}
+    \item I described Joint A's endstop as ``still dead from the reversed-supply
+    damage''. It had never been confirmed dead --- the entry from 2026-09-25
+    says ``Unresolved'' --- and it had not been retested. It works.
+    \item I claimed Joint C's endstop wiring had ``never demonstrated'' it
+    worked. The log records a full verification from 2026-09-03, both poles,
+    both bits, dwell times measured. The log is searchable and it is the
+    authority; it should be consulted before asserting what was or was not
+    established.
+\end{itemize}
+
+\subsection{State of the arm}
+All six joints have verified endstops, and all four 42Ds have limit port remap
+enabled simultaneously for the first time. The bus is clean. The gripper is
+verified on \texttt{0x07}.
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Flex each harness while watching \texttt{0x34}. The one established
+    fact is that B's path was intermittent; a dropout found with the arm
+    stationary is far cheaper than one found mid-move.
+    \item Re-verify C's endstops. Its sensor was borrowed during this work and
+    its last confirmed test is from 2026-09-03.
+    \item Confirm B's direction mapping by eye during a small move. It is the
+    last unmapped joint, and \texttt{joint\_move.py} refuses to move it until
+    then.
+    \item The staged motion test across the assembled arm, still not started.
+\end{itemize}
+
 \newpage
 \appendix
 \section*{Appendices --- standing reference}
