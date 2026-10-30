@@ -410,6 +410,20 @@ python3 joint_endstop_test.py --can-id 0x06
 \texttt{SR\_vFOC}, and that the remap command was actually sent --- it has no
 read-back, so it cannot be confirmed by query.}
 
+\begin{caution}{On this build, enabling the remap is a routine step, not a diagnosis}
+Every 42D on this arm --- Z, A, B and C --- needs limit port remap, because the
+endstops are wired to \texttt{En} and \texttt{Dir} rather than to the
+\texttt{IN\_1} terminal. \textbf{Send \texttt{9E 01} as part of bringing up a
+42D} rather than waiting to discover it. Three separate joints have presented
+the identical signature first --- sensor LED lighting, \texttt{0x34} frozen at
+\texttt{0x01} --- and each time it cost a session to re-derive.
+
+Note also that the setting can come back off on its own: Joint C's remap was
+enabled on 2026-09-03 and found disabled on 10-30 with nobody having changed it.
+\textbf{Check it at the start of every session.} There is no read-back, so the
+only test is to toggle it and watch the byte move.
+\end{caution}
+
 \begin{caution}{\texttt{EndLimit} is not what makes an endstop readable}
 \texttt{EndLimit} governs only whether the driver \emph{acts} on a limit.
 \texttt{0x34} reports the pin regardless, so if an input is not reporting,

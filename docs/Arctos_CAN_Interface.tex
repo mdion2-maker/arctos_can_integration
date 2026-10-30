@@ -146,7 +146,7 @@ X & 57D & 13.5   & no  & \texttt{0x00} & one, \texttt{IN\_2} (CW side) & --- \\
 Y & 57D & 150.0  & no  & \texttt{0x80} & \texttt{IN\_1} CW, \texttt{IN\_2} CCW & 158.24\textdegree{} \\
 Z & 42D & 150.0  & \textbf{yes} & \texttt{0x00} & \texttt{IN\_1}=\texttt{En} CW, \texttt{IN\_2}=\texttt{Dir} CCW & 124.4\textdegree{} $\pm$0.3 \\
 A & 42D & 48.0   & \textbf{yes} & \texttt{0x00} & \texttt{IN\_1}=\texttt{En}, \texttt{IN\_2}=\texttt{Dir} & --- \\
-B & 42D & 67.82  & \textbf{yes} & \textbf{unconfirmed} & \texttt{IN\_1}=\texttt{En}, \texttt{IN\_2}=\texttt{Dir} & --- \\
+B & 42D & 67.82  & \textbf{yes} & \texttt{0x00} & \texttt{IN\_1}=\texttt{En}, \texttt{IN\_2}=\texttt{Dir} & --- \\
 C & 42D & 67.82  & \textbf{yes} & \texttt{0x80} & \texttt{IN\_1}=\texttt{En}, \texttt{IN\_2}=\texttt{Dir} & --- \\
 \bottomrule
 \end{tabular}
@@ -156,9 +156,10 @@ C & 42D & 67.82  & \textbf{yes} & \texttt{0x80} & \texttt{IN\_1}=\texttt{En}, \t
 \texttt{0x00} is clockwise on X and Z and counter-clockwise on Y and C. Four
 joints, no pattern. An earlier draft proposed that ``encoder counting down means
 clockwise'' held across joints; Y disproved it. Each mapping in the table was
-established by watching the joint turn, and A and B are blank because nobody has
-watched them yet. \texttt{joint\_move.py} refuses to move a joint whose mapping is
-blank rather than guess, because a guess is a coin flip on direction.
+established by watching the joint turn. \textbf{All six are now confirmed}, B being
+the last, on 2026-10-30. \texttt{joint\_move.py} refuses to move a joint whose
+mapping is blank rather than guess, because a guess is a coin flip on direction;
+\texttt{--assume-cw} exists to make that first observed move deliberately.
 \end{caution}
 
 \begin{caution}{Per-joint quirks that have each cost a session}
@@ -173,6 +174,13 @@ blank rather than guess, because a guess is a coin flip on direction.
     \item \textbf{X's detection zone is 10--17\textdegree{} wide} but releases in
     0.062\textdegree{} going the other way, so home must sit clear of it. Y's and
     Z's are only a few degrees.
+    \item \textbf{B is stick-slip.} It jams for roughly 2.9\,s, builds torque and
+    breaks free, completing the move. Drive it with
+    \texttt{--stall-window 5}; the default 1.5\,s patience aborts it mid-stick and
+    reports a stall that is not one. It also stalls at 1200\,mA and completes at
+    1600\,mA.
+    \item \textbf{C is half a differential wrist} with B. Driving it alone produces
+    a blend of both wrist axes, not a clean rotation about one.
 \end{itemize}
 \end{caution}
 
@@ -994,7 +1002,11 @@ explicit safety band.
   \texttt{joint\_move.py z cw 15}. One joint, a named direction, a distance.
   Direction is a name rather than a byte because the byte does not transfer
   between joints; unconfirmed joints are refused rather than guessed at. Endstop
-  and stall aborts on by default, \texttt{0xF7} before the coil disable. \\
+  and stall aborts on by default, \texttt{0xF7} before the coil disable.
+  \textbf{On an assembled arm:} \texttt{--leave-coils on} for a gravity-loaded
+  joint, since disabling the coils lets it fall; \texttt{--stall-window 5} for a
+  sticky joint; \texttt{--assume-cw} to make a first, deliberately-unverified move
+  on a joint whose direction is unknown. \\
 \texttt{joint\_calibrate.py} &
   \texttt{joint\_calibrate.py z}. Sweeps to both limits at one speed and reports
   the separation. Imports the joint table from \texttt{joint\_move.py} so the

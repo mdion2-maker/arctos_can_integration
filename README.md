@@ -18,18 +18,22 @@ upstream `ros2_arctos` repository — everything here is built on top of it.
 
 ## Where the project is now
 
-| Joint | Driver | Gear | Endstops | Verified | Notes |
+| Joint | Driver | Gear | Endstops | Motion | Notes |
 |---|---|---|---|---|---|
-| **X** | 57D | 13.5:1 | one, on `IN_2` | homed, zeroed | **Never send `GoHome`** — `IN_1` is empty, so it would never stop |
-| **Y** | 57D | 150:1 | two | homed, 158.24° envelope | Gears slip above speed 25 |
-| **Z** | 42D | 150:1 | two, via remap | 124.4° ± 0.3 envelope | Needs limit port remap |
-| **A** | 42D | 48:1 | **damaged** | bare motor only | Endstop killed by reversed supply; never coupled to its joint |
-| **B** | 42D | 67.82:1 | appears remapped | on the bus | **Direction unconfirmed** — tooling refuses to move it |
-| **C** | 42D | 67.82:1 | two, via remap | on the bus | Differential wrist with B |
-| **Gripper** | Arduino + MCP2515 | — | — | validated | CAN ID `0x07`, band 100–118° |
+| **X** | 57D | 13.5:1 | one, on `IN_2` | ✅ 0.04° | **Never send `GoHome`** — `IN_1` is empty, so it would never stop |
+| **Y** | 57D | 150:1 | two | ✅ 0.00° | Gears slip above speed 25; 158.24° envelope |
+| **Z** | 42D | 150:1 | two, remapped | ✅ 0.007° | 124.4° ± 0.3 envelope |
+| **A** | 42D | 48:1 | two, remapped | ✅ 0.002° | First tested under load 2026-10-30 |
+| **B** | 42D | 67.82:1 | two, remapped | ⚠️ stick-slip | Jams ~2.9 s then breaks free; needs `--stall-window 5` |
+| **C** | 42D | 67.82:1 | one dual-output, remapped | ❌ untested | Differential wrist with B |
+| **Gripper** | Arduino + MCP2515 | — | n/a | ✅ | CAN ID `0x07`, band 100–118° |
 
-**Next up:** a staged motion test across X, Y, Z and A on the fully assembled arm, then
-B and C together as a differential wrist.
+Motion figures are round-trip return error over a 30° cycle under real load.
+All six direction mappings are confirmed; all four 42Ds have limit port remap enabled.
+
+**Next up:** map Joint B's travel between its mechanical stops, then a first motion
+test for C. B overheated during diagnosis on 2026-10-30 and needs to be cool before
+it is driven again.
 
 ---
 
@@ -114,8 +118,20 @@ from a table in the script, because each differs per joint and each has cost a s
 when got wrong. A joint whose direction has never been confirmed by eye is **refused**
 rather than guessed at.
 
-Endstop and stall aborts are on by default. On an assembled arm add `--leave-coils on`
-for any gravity-loaded joint: disabling the coils lets it fall.
+Endstop and stall aborts are on by default. Two flags matter on a real arm:
+
+| Flag | When |
+|---|---|
+| `--leave-coils on` | Any **gravity-loaded** joint. Disabling the coils lets it fall. |
+| `--stall-window 5` | A **sticky** joint. Joint B jams for ~2.9 s, builds torque and breaks free; the default 1.5 s patience aborts it mid-stick and reports a stall that isn't one. |
+
+**A stall means the joint cannot move, not that it is moving slowly.** Crawling is
+reported and the move continues. If a joint "stalls" partway through every move, suspect
+the detector before the mechanism.
+
+For a joint whose direction has never been confirmed, `--assume-cw 0x00` moves it once
+under a stated assumption so you can watch which way it turns — then record the real
+value in the script's table.
 
 ### 5. Home it
 
@@ -172,6 +188,16 @@ approached, while every number on the bus looked perfect.
 
 **No motion result here means anything without an observation of the output** — an
 endstop trip, a physical reference, or somebody watching.
+
+## The thing most likely to damage hardware
+
+**Count stalls as a heat budget.** A stalled stepper holds full current while doing no
+work and generates no airflow, so it heats far faster than a joint that is actually
+moving. Two motors have been overheated in this project, **both during diagnosis rather
+than during use** — a session that keeps re-commanding a joint that will not move is the
+dangerous case, not a long run of successful moves.
+
+If a joint stalls repeatedly, stop and let it cool. Nothing is lost by pausing.
 
 ---
 
