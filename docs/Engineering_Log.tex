@@ -1656,6 +1656,133 @@ All four 42Ds carry limit port remap simultaneously, and the bus is clean.
     \item The staged motion test across the assembled arm, still not started.
 \end{itemize}
 
+\section{2026-10-30 --- The staged motion test, and Joint B's stick-slip}
+\label{sec:session-2026-10-30-motion}
+The first motion test of the fully assembled arm. Four joints passed cleanly.
+The fifth consumed the rest of the session and ended with an overheated motor.
+
+\subsection{X, Y, Z and A: all clean under real load}
+Each joint, a small move then a larger one, out and back, with coils left
+energised on everything except X since the rest are gravity-loaded:
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Joint} & \textbf{Small} & \textbf{Large} & \textbf{Note} \\ \midrule
+X \texttt{0x01} & 0.003\textdegree{} (2\textdegree{}) & 0.040\textdegree{} (15\textdegree{}) & carries the whole arm \\
+Y \texttt{0x02} & 0.000\textdegree{} (2\textdegree{}) & 0.000\textdegree{} (15\textdegree{}) & capped at speed 25 \\
+Z \texttt{0x03} & 0.004\textdegree{} (2\textdegree{}) & 0.007\textdegree{} (15\textdegree{}) & \\
+A \texttt{0x04} & 0.003\textdegree{} (1\textdegree{}) & 0.002\textdegree{} (15\textdegree{}) & first ever under load \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Figures are round-trip return error. A had only ever been tested as a bare
+motor; its loaded accuracy matches its unloaded accuracy, so its drivetrain
+costs nothing measurable. Joint A's 5\textdegree{} test showed 51 counts
+(0.023\textdegree{}) of drift while parked between legs --- gravity settling the
+elbow against holding torque, and incidental confirmation the joint is genuinely
+loaded.
+
+\subsection{Joint B's direction confirmed --- all six now mapped}
+Clockwise on B is \texttt{0x00}, confirmed by eye. That was the last unmapped
+joint; \texttt{joint\_move.py} no longer refuses any of them. Note \texttt{0x00}
+counts B's encoder \emph{up}, as it does on A and opposite to X and Z --- still
+no cross-joint pattern.
+
+\subsection{Joint B is stick-slip, and it does break through}
+B stalled repeatedly. An instrumented trace at speed 40 caught the actual
+behaviour:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Time} & \textbf{Position} & \textbf{Rate} \\ \midrule
+0.4--2.0\,s & climbing & 3.5\textdegree{}/s, tracking the commanded 3.54 \\
+2.4--4.9\,s & $+7.67$\textdegree{} & \textbf{0.00 --- stuck for 2.5\,s} \\
+5.3\,s & $+9.80$\textdegree{} & \textbf{5.24 --- breaks free and surges} \\
+9.4\,s & $+9.99$\textdegree{} & settles; full 10\textdegree{} delivered \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+It jams, builds torque, breaks free, and completes. This is documented
+behaviour for this joint: an earlier entry traces a stick-slip pattern on B to
+gear-mesh clearance, which is why its gears were reprinted, and
+\texttt{joint\_unstick\_move\_test.py} exists for exactly this.
+
+\begin{caution}{A stall detector that is too impatient reports a sticky joint as broken}
+\texttt{joint\_move.py} aborted after 1.5\,s of no movement. B's stick phase
+runs about 2.9\,s. \textbf{A large share of the stalls reported during this
+session were the detector cutting the joint off before it broke free}, not the
+joint failing. Two separate fixes were needed:
+
+\begin{itemize}
+    \item \texttt{--stall-window} makes the patience configurable. Four to five
+    seconds suits a gritty mesh.
+    \item A stall now means \emph{unable to move}, not \emph{moving slowly}.
+    The threshold was 5\% of commanded rate, which aborted B while it crawled
+    through a sticky spot at 11\%. Below 1\% aborts; between 1\% and 25\% is
+    reported as crawling and the move continues.
+\end{itemize}
+
+Earlier in the session the same detector was also firing during the
+acceleration and deceleration ramps --- a 15\textdegree{} move ``stalled'' at
+13.7\textdegree{} with 201 counts against a 204 threshold, which is deceleration
+working correctly. Both ramps are now excluded.
+\end{caution}
+
+\subsection{B's counter-clockwise travel limit}
+B stops at \texttt{raw} $\approx$ 139980 going counter-clockwise --- hit three
+times from different starting positions, with both endstop bits idle
+(\texttt{io = 0x03}). Clockwise from the same point it moves freely and
+completes full 10\textdegree{} moves. A consistent, direction-specific stop with
+no electrical limit asserted reads as B's mechanical travel limit rather than a
+fault.
+
+Earlier apparent inconsistency in the jam position (\texttt{45980},
+\texttt{29590}) is explained by power cycles: \textbf{the encoder resets to zero
+on every power-up}, so raw values from different power sessions are not
+comparable.
+
+\subsection{B overheated}
+The session ended with the user reporting ``B is actually too hot'' and cutting
+power.
+
+\begin{caution}{Count stalls as a heat budget}
+A stalled stepper holds full current while doing no work and generates no
+airflow from motion, so it heats far faster than ordinary travel. B stalled well
+over a dozen times during this diagnosis. The thermal risk was noted several
+times but testing continued on request rather than being halted --- the halt
+should come from whoever is watching the data, not only from whoever is touching
+the motor. This is the second motor overheated in this project; Joint C was the
+first, in September.
+\end{caution}
+
+\subsection{Two corrections}
+\begin{itemize}
+    \item B's working current was lowered to 1200\,mA \textbf{without recording
+    its previous value}, and \texttt{0x83} has no read-back. B stalled at
+    1200\,mA and completed moves at 1600\,mA, so the change was actively
+    unhelpful. It is now at 1600\,mA, the 42D factory default. The driver's
+    \texttt{Ma} screen shows the live value if the original needs recovering.
+    \item An ad-hoc test loop written during the session reintroduced the
+    acceleration-grace bug that had been fixed in \texttt{joint\_move.py} an
+    hour earlier, and reported 0.000\textdegree{} moves that were really the
+    loop giving up before the motor started. Use the tested tool rather than
+    hand-rolling a loop.
+\end{itemize}
+
+\subsection{Next steps}
+\begin{itemize}
+    \item Let B cool completely before any further testing.
+    \item Map B's actual travel between its two mechanical stops, driving only
+    in the direction that moves freely, with the patient detector.
+    \item Joint C has not had a motion test yet. Remember it is half a
+    differential wrist, so driving it alone produces a blend of both wrist axes.
+    \item Flex each harness while watching \texttt{0x34}, still outstanding.
+\end{itemize}
+
 \newpage
 \appendix
 \section*{Appendices --- standing reference}

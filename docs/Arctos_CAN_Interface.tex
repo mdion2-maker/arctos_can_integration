@@ -888,6 +888,18 @@ Both endstop inputs read low at rest &
   swaps \texttt{Signal} and \texttt{GND} and straps the driver input to the
   module's ground while leaving the sensor powered and its LED lit. Turn the plug
   around. \\
+A joint ``stalls'' partway through every move &
+  Check the detector before the joint. A stick-slip joint jams, builds torque
+  and breaks free: Joint B sticks for $\sim$2.9\,s then surges and completes.
+  A detector that aborts after 1.5\,s reports that as a stall every time. Also
+  exclude the acceleration and deceleration ramps --- a move legitimately slows
+  as it approaches target. \textbf{A stall means unable to move, not moving
+  slowly.} \\
+Repeated stalls while diagnosing &
+  \textbf{Treat the stall count as a heat budget.} A stalled stepper holds full
+  current while doing no work and makes no airflow, so it heats much faster
+  than ordinary travel. Two motors have been overheated in this project, both
+  during diagnosis rather than during use. Stop and let it cool. \\
 Sensor shows no LED at all &
   \textbf{Try the other magnet face first.} These are unipolar hall parts: one
   face triggers them, the other does nothing whatsoever including the indicator.

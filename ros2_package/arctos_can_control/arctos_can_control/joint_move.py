@@ -51,8 +51,30 @@ ENCODER_CPR = 16384
 MICROSTEPS_PER_REV = 3200.0
 ACCEL = 2
 STALL_WINDOW_S = 1.5
-STALL_GRACE_S = 4.0
-STALL_FRACTION = 0.05          # of expected travel per window
+STALL_GRACE_S = 4.0            # minimum; scaled up at low speed, see stall_grace()
+# A stall is the joint being UNABLE to move, not moving slowly. A stick-slip
+# joint crawls while it builds torque and then surges -- Joint B covered 2554
+# counts in a 5s window and was aborted as stalled, when it was simply working
+# through a sticky spot. Abort only on essentially-zero movement; report slow
+# movement instead of killing the move.
+STALL_FRACTION = 0.01          # abort below this fraction of expected travel
+CRAWL_FRACTION = 0.25          # note, but do not abort, below this
+# Stop stall-checking once this fraction of the commanded distance is done. A
+# move decelerates as it approaches target, so travel legitimately falls below
+# the stall threshold near the end -- measured on Joint B, where 15 deg moves
+# "stalled" at 13.7 deg with 201 counts against a 204 threshold. That is the
+# deceleration ramp doing its job, not a fault.
+STALL_SKIP_AFTER = 0.85
+
+
+def stall_grace(speed):
+    """How long to wait before stall-checking at all.
+
+    The acceleration ramp is a fixed number of steps, so at low speed it takes
+    proportionally longer in wall-clock time. A flat 4s grace fired the instant
+    it expired on a speed-6 move that was still accelerating. Scale it.
+    """
+    return max(STALL_GRACE_S, STALL_GRACE_S * 25.0 / max(speed, 1))
 
 # can_id, gear ratio, board, clockwise byte, remap enabled, max safe speed
 # The clockwise byte is None where it has never been confirmed on the machine.
@@ -64,8 +86,8 @@ JOINTS = {
     "x": (0x01, 13.5,  "57D", 0x00, False, None),
     "y": (0x02, 150.0, "57D", 0x80, False, 25),    # gears slip above 25
     "z": (0x03, 150.0, "42D", 0x00, True,  None),  # remapped 2026-09-11
-    "a": (0x04, 48.0,  "42D", 0x00, False, None),  # cw confirmed by eye 2026-09-18
-    "b": (0x05, 67.82, "42D", None, False, None),
+    "a": (0x04, 48.0,  "42D", 0x00, True,  None),  # cw by eye 09-18; remapped 10-23
+    "b": (0x05, 67.82, "42D", 0x00, True,  None),  # cw confirmed by eye 2026-10-30
     "c": (0x06, 67.82, "42D", 0x80, True,  None),  # remapped 2026-09-03
 }
 
@@ -121,6 +143,16 @@ def main():
                     help="motor rpm (default 25). Joint Y's gears slip above 25.")
     ap.add_argument("--channel", default="can0")
     ap.add_argument("--dry-run", action="store_true", help="print the frame, send nothing")
+    ap.add_argument("--stall-window", type=float, default=None, metavar="SECONDS",
+                    help="how long with no movement before calling it a stall. Default "
+                         "1.5s. A stick-slip joint jams, builds torque and breaks free -- "
+                         "Joint B sticks for ~2.9s then surges and completes, so 1.5s "
+                         "aborts it mid-stick. Use 4-5 for a gritty mesh.")
+    ap.add_argument("--leave-coils", choices=["on", "off"], default="off",
+                    help="coil state when the move ends (default off). Use 'on' for a "
+                         "gravity-loaded joint on an assembled arm: disabling the coils "
+                         "lets it fall. Use 'off' for a bare motor or a joint that holds "
+                         "its own position.")
     ap.add_argument("--assume-cw", type=lambda x: int(x, 0), default=None, metavar="BYTE",
                     help="bootstrap a joint with no confirmed mapping: treat this byte "
                          "(0x00 or 0x80) as clockwise for this run. Watch the joint, then "
@@ -154,12 +186,13 @@ def main():
         print(f"*** Above it the gears slip, and the encoder cannot see that happen.")
         args.speed = max_speed
 
+    stall_window = args.stall_window if args.stall_window else STALL_WINDOW_S
     mask = io_mask(board, remapped)
     counts_per_joint_deg = gear * ENCODER_CPR / 360.0
     motor_rev = args.degrees * gear / 360.0
     pulses = round(motor_rev * MICROSTEPS_PER_REV)
     expected_s = motor_rev / args.speed * 60.0
-    stall_min = max(200, int(args.speed / 60.0 * ENCODER_CPR * STALL_WINDOW_S * STALL_FRACTION))
+    stall_min = max(200, int(args.speed / 60.0 * ENCODER_CPR * stall_window * STALL_FRACTION))
 
     frame = [0xFD, direction + ((args.speed >> 8) & 0x0F), args.speed & 0xFF, ACCEL,
              (pulses >> 16) & 0xFF, (pulses >> 8) & 0xFF, pulses & 0xFF]
@@ -196,6 +229,7 @@ def main():
 
         hist = collections.deque()
         t0 = last_print = time.time()
+        last_crawl_note = 0.0
         while time.time() - t0 < expected_s + 30:
             io = query(bus, can_id, 0x34)
             pos = query(bus, can_id, 0x31)
@@ -215,9 +249,21 @@ def main():
                 break
 
             hist.append((now, pos))
-            while hist and now - hist[0][0] > STALL_WINDOW_S:
+            while hist and now - hist[0][0] > stall_window:
                 hist.popleft()
-            if (now - t0 > STALL_GRACE_S and len(hist) > 5
+            moved_in_window = abs(pos - hist[0][1]) if hist else 0
+            expected_window = args.speed / 60.0 * ENCODER_CPR * stall_window
+            if (now - t0 > stall_grace(args.speed) and len(hist) > 5
+                    and stall_min <= moved_in_window < expected_window * CRAWL_FRACTION
+                    and now - last_crawl_note > 4.0):
+                print(f"  ... crawling: {moved_in_window} counts in {stall_window:g}s "
+                      f"({100*moved_in_window/expected_window:.0f}% of commanded) -- "
+                      f"sticky, not stalled", flush=True)
+                last_crawl_note = now
+            target_counts = pulses * ENCODER_CPR / MICROSTEPS_PER_REV
+            nearly_there = abs(pos - p0) >= target_counts * STALL_SKIP_AFTER
+            if (now - t0 > stall_grace(args.speed) and len(hist) > 5
+                    and not nearly_there
                     and abs(pos - hist[0][1]) < stall_min):
                 send(bus, can_id, [0xF7])
                 print(f"\n*** STALL at {now - t0:.1f}s -- {abs(pos - hist[0][1])} counts in "
@@ -255,9 +301,14 @@ def main():
                 print(f"  arrived: {(pos - p0) / counts_per_joint_deg:+.3f} deg")
                 break
     finally:
-        send(bus, can_id, [0xF7])       # a coil disable does NOT cancel a move
+        # EMERGENCY_STOP first: a coil disable does NOT cancel a move in flight.
+        send(bus, can_id, [0xF7])
         time.sleep(0.1)
-        send(bus, can_id, [0xF3, 0x00])
+        # On an assembled arm a gravity-loaded joint FALLS when its coils are
+        # disabled. That was harmless on a bare motor and is not harmless now,
+        # so the caller chooses.
+        hold = args.leave_coils == "on"
+        send(bus, can_id, [0xF3, 0x01 if hold else 0x00])
         # The driver may have stopped answering -- lost power, tripped supply,
         # pulled connector. The stop and the coil disable above have already gone
         # out; this is only reporting, so it must never raise and prevent the
@@ -266,7 +317,8 @@ def main():
         end_io = query(bus, can_id, 0x34)
         pos_s = str(end_pos) if end_pos is not None else "no reply"
         io_s = f"0x{end_io:02X}" if end_io is not None else "no reply"
-        print(f"\nfinal raw={pos_s}  io={io_s}  ({stopped_by}).  coils disabled")
+        print(f"\nfinal raw={pos_s}  io={io_s}  ({stopped_by}).  "
+              f"coils {'LEFT ON (holding)' if hold else 'disabled'}")
         if end_pos is None or end_io is None:
             print("  WARNING: the driver stopped answering. Zero bus-errors with total\n"
                   "  silence means it lost power rather than the bus failing -- check the\n"
