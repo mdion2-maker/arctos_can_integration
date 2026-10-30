@@ -1607,16 +1607,52 @@ All six joints have verified endstops, and all four 42Ds have limit port remap
 enabled simultaneously for the first time. The bus is clean. The gripper is
 verified on \texttt{0x07}.
 
+\subsection{Resolution: all four wrist sensors verified}
+After a full rewire, both joints were retested together with every driver on the
+bus watched at once:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Joint} & \textbf{Transition} & \textbf{Input} \\ \midrule
+B (\texttt{0x05}) & \texttt{0x03} $\rightarrow$ \texttt{0x02} & bit 0, \texttt{En} \\
+B (\texttt{0x05}) & \texttt{0x03} $\rightarrow$ \texttt{0x01} & bit 1, \texttt{Dir} \\
+C (\texttt{0x06}) & \texttt{0x03} $\rightarrow$ \texttt{0x02} & bit 0, \texttt{En} \\
+C (\texttt{0x06}) & \texttt{0x03} $\rightarrow$ \texttt{0x01} & bit 1, \texttt{Dir} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All active low, all returning cleanly to \texttt{0x03}, and no joint reacting to
+another joint's sensor. B passed three consecutive times, which matters given it
+had been failing intermittently.
+
+\begin{caution}{A dark sensor LED is usually the wrong magnet pole}
+C's sensors appeared completely dead on the first attempt --- no LED, no bit.
+They worked immediately when the magnet was turned over. These are unipolar hall
+parts: one face triggers them and the other does nothing whatsoever, indicator
+included. \textbf{This is the third apparently-dead sensor on this arm resurrected
+by flipping the magnet.} Try both faces before investigating anything else; it
+costs seconds and it has repeatedly saved hours.
+
+Note the diagnostic ordering this implies. A lit LED with a frozen byte points at
+the signal path, as it did for B. A \emph{dark} LED means the sensor is not
+detecting at all, so the driver, \texttt{Com} and remap are all irrelevant --- do
+not look at them, which is the mistake that cost two sessions on B.
+\end{caution}
+
+\textbf{Endstop verification is now complete across the whole arm}: X and Y on
+57D hardware, Z, A, B and C on remapped 42Ds, and the gripper on \texttt{0x07}.
+All four 42Ds carry limit port remap simultaneously, and the bus is clean.
+
 \subsection{Next steps}
 \begin{itemize}
-    \item Flex each harness while watching \texttt{0x34}. The one established
-    fact is that B's path was intermittent; a dropout found with the arm
-    stationary is far cheaper than one found mid-move.
-    \item Re-verify C's endstops. Its sensor was borrowed during this work and
-    its last confirmed test is from 2026-09-03.
     \item Confirm B's direction mapping by eye during a small move. It is the
     last unmapped joint, and \texttt{joint\_move.py} refuses to move it until
-    then.
+    then --- the only remaining blocker to driving the assembled arm.
+    \item Flex each harness while watching \texttt{0x34}. B's fault was
+    intermittent and the fix was a reseat, so it may recur; a dropout found with
+    the arm stationary is far cheaper than one found mid-move.
     \item The staged motion test across the assembled arm, still not started.
 \end{itemize}
 

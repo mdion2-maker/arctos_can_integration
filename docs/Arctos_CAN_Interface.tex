@@ -145,9 +145,9 @@ default.
 X & 57D & 13.5   & no  & \texttt{0x00} & one, \texttt{IN\_2} (CW side) & --- \\
 Y & 57D & 150.0  & no  & \texttt{0x80} & \texttt{IN\_1} CW, \texttt{IN\_2} CCW & 158.24\textdegree{} \\
 Z & 42D & 150.0  & \textbf{yes} & \texttt{0x00} & \texttt{IN\_1}=\texttt{En} CW, \texttt{IN\_2}=\texttt{Dir} CCW & 124.4\textdegree{} $\pm$0.3 \\
-A & 42D & 48.0   & no  & \texttt{0x00} &  & --- \\
-B & 42D & 67.82  &     &               &  & --- \\
-C & 42D & 67.82  & \textbf{yes} & \texttt{0x80} & on \texttt{En}/\texttt{Dir} & --- \\
+A & 42D & 48.0   & \textbf{yes} & \texttt{0x00} & \texttt{IN\_1}=\texttt{En}, \texttt{IN\_2}=\texttt{Dir} & --- \\
+B & 42D & 67.82  & \textbf{yes} & \textbf{unconfirmed} & \texttt{IN\_1}=\texttt{En}, \texttt{IN\_2}=\texttt{Dir} & --- \\
+C & 42D & 67.82  & \textbf{yes} & \texttt{0x80} & \texttt{IN\_1}=\texttt{En}, \texttt{IN\_2}=\texttt{Dir} & --- \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -888,6 +888,13 @@ Both endstop inputs read low at rest &
   swaps \texttt{Signal} and \texttt{GND} and straps the driver input to the
   module's ground while leaving the sensor powered and its LED lit. Turn the plug
   around. \\
+Sensor shows no LED at all &
+  \textbf{Try the other magnet face first.} These are unipolar hall parts: one
+  face triggers them, the other does nothing whatsoever including the indicator.
+  Three apparently-dead sensors on this arm have been resurrected by flipping
+  the magnet. A dark LED also means the sensor is not detecting, so the driver,
+  \texttt{Com} and remap are all irrelevant --- investigating them is the
+  mistake that cost two sessions on Joint B. \\
 A 42D rests at \texttt{0x01} &
   Treat this as \textbf{remap off}, not as a triggered limit. On a 42D the byte
   is the same either way: remap off makes bit 1 a phantom reading 0, while remap
